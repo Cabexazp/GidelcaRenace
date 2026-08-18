@@ -1,0 +1,6 @@
+{
+  "name": "GidelcaRenace",
+  "description": "Sistema de gestión de ayudas y censo de necesidades para estudiantes del Gimnasio del Calima",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

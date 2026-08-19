@@ -15,15 +15,26 @@ import {
   Sparkles,
   FileSpreadsheet,
   Upload,
-  ArrowRight
+  ArrowRight,
+  Globe,
+  Key,
+  ShieldCheck,
+  Layers,
+  HelpCircle
 } from 'lucide-react';
 import {
   supabase,
   SUPABASE_URL,
+  SUPABASE_ANON_KEY,
   DEFAULT_TABLE_NAME,
   SUPABASE_SCHEMA_SQL,
   cargarTodosLosEstudiantesSupabase,
-  parsearCSVGoogleForms
+  guardarEstudianteEnSupabase,
+  eliminarEstudianteEnSupabase,
+  parsearCSVGoogleForms,
+  actualizarCredencialesSupabase,
+  getSupabaseUrl,
+  getSupabaseAnonKey
 } from '../lib/supabase';
 import { EstudianteReporte } from '../types';
 
@@ -44,16 +55,31 @@ export const SupabaseSyncModal: React.FC<SupabaseSyncModalProps> = ({
   onClose,
   onUpdateEstudiantesFromSupabase
 }) => {
+  const [activeTab, setActiveTab] = useState<'tabla' | 'vercel' | 'sql'>('tabla');
   const [currentTable, setCurrentTable] = useState(tableName || DEFAULT_TABLE_NAME);
+  const [customUrl, setCustomUrl] = useState(getSupabaseUrl());
+  const [customKey, setCustomKey] = useState(getSupabaseAnonKey());
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<'success' | 'error' | 'info'>('info');
   const [copied, setCopied] = useState(false);
+  const [copiedVercel, setCopiedVercel] = useState(false);
   const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
   const [totalRemoteCount, setTotalRemoteCount] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!isOpen) return null;
+
+  const handleSaveCredentials = () => {
+    try {
+      actualizarCredencialesSupabase(customUrl, customKey);
+      setStatusType('success');
+      setStatusMessage('¡Credenciales de Supabase actualizadas correctamente! Ahora puedes probar la conexión.');
+    } catch (e: any) {
+      setStatusType('error');
+      setStatusMessage(`Error guardando credenciales: ${e?.message || e}`);
+    }
+  };
 
   const handleTestAndInspect = async (tableToTest: string) => {
     setLoading(true);
@@ -72,7 +98,12 @@ export const SupabaseSyncModal: React.FC<SupabaseSyncModalProps> = ({
         if (error.code === '42P01' || error.message.includes('does not exist')) {
           setStatusType('error');
           setStatusMessage(
-            `La tabla "${tableToTest}" no existe en el proyecto Supabase actual. Verifica el nombre exacto de tu tabla o importa el archivo CSV de Google Forms directamente.`
+            `La tabla "${tableToTest}" no existe en el proyecto Supabase actual. Verifica el nombre exacto (ej: Encuesta o encuesta) o revisa la pestaña de SQL.`
+          );
+        } else if (error.code === '42501' || error.message.includes('row-level security')) {
+          setStatusType('error');
+          setStatusMessage(
+            `⚠️ Error de permisos RLS en Supabase: La tabla tiene Row Level Security habilitado sin permisos para anon. Copia y ejecuta el script SQL de la pestaña "Script SQL & RLS" en Supabase.`
           );
         } else {
           setStatusType('error');
@@ -94,6 +125,65 @@ export const SupabaseSyncModal: React.FC<SupabaseSyncModalProps> = ({
     } catch (err: any) {
       setStatusType('error');
       setStatusMessage(`Error de red o conexión: ${err?.message || err}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTestWriteAndDelete = async () => {
+    setLoading(true);
+    setStatusMessage('Ejecutando diagnóstico en Supabase: probando INSERT y DELETE...');
+    setStatusType('info');
+
+    const testStudent: EstudianteReporte = {
+      id: `test_${Date.now()}`,
+      fecha_reporte: new Date().toISOString().split('T')[0],
+      nombre_estudiante: 'PRUEBA_VERIFICACION_GIDELCA',
+      grado: '11-1',
+      nombre_acudiente: 'Comite Verificacion',
+      telefono: '3001234567',
+      direccion: 'Calima',
+      ubicacion: 'Calima El Darién',
+      leciones_fisicas: 'Ninguna',
+      salud_emocional: 'Estable',
+      condicion_vivienda: 'Habitable',
+      ayuda_prioritaria: 'Alimentos',
+      conectividad: 'Buena',
+      nivel_urgencia: 'verde',
+      ayudas_entregadas: { Alimento: 0, Medicamento: 0, Ropa: 0, Emocional: 0, Construccion: 0 },
+      historial_ayudas: []
+    };
+
+    try {
+      // 1. Probar Crear / Insertar
+      const saveRes = await guardarEstudianteEnSupabase(testStudent, currentTable);
+      if (!saveRes.success) {
+        setStatusType('error');
+        setStatusMessage(
+          `❌ Falló la creación en Supabase: ${saveRes.message || saveRes.error?.message}. Causa común: Falta la política de RLS para INSERT en Supabase.`
+        );
+        setLoading(false);
+        return;
+      }
+
+      // 2. Probar Eliminar / Borrar
+      const delRes = await eliminarEstudianteEnSupabase(testStudent, currentTable);
+      if (!delRes.success) {
+        setStatusType('error');
+        setStatusMessage(
+          `⚠️ Se pudo crear el registro pero falló la eliminación: ${delRes.message || delRes.error?.message}. Causa común: Falta la política de RLS para DELETE en Supabase.`
+        );
+        setLoading(false);
+        return;
+      }
+
+      setStatusType('success');
+      setStatusMessage(
+        '✅ ¡Prueba de Escritura y Eliminación exitosa! Supabase permite tanto crear nuevos estudiantes como eliminarlos correctamente.'
+      );
+    } catch (err: any) {
+      setStatusType('error');
+      setStatusMessage(`❌ Error en la prueba: ${err?.message || err}`);
     } finally {
       setLoading(false);
     }
@@ -184,9 +274,18 @@ export const SupabaseSyncModal: React.FC<SupabaseSyncModalProps> = ({
     setTimeout(() => setCopied(false), 2500);
   };
 
+  const vercelEnvSnippet = `VITE_SUPABASE_URL=${customUrl}
+VITE_SUPABASE_ANON_KEY=${customKey}`;
+
+  const copyVercelEnv = () => {
+    navigator.clipboard.writeText(vercelEnvSnippet);
+    setCopiedVercel(true);
+    setTimeout(() => setCopiedVercel(false), 2500);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-3xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
         {/* Modal Header */}
         <div className="bg-gradient-to-r from-emerald-800 to-emerald-900 px-6 py-4 flex items-center justify-between text-white">
           <div className="flex items-center gap-3">
@@ -195,59 +294,131 @@ export const SupabaseSyncModal: React.FC<SupabaseSyncModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-black tracking-tight">
-                Sincronización de Base de Datos • Google Forms & Supabase
+                Sincronización con Supabase & Vercel
               </h2>
               <p className="text-xs text-emerald-200">
-                Gimnasio del Calima (1,270+ registros censados)
+                Gimnasio del Calima • GidelcaRenace
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="p-1.5 rounded-xl text-emerald-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            className="p-1.5 rounded-xl text-emerald-200 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Modal Body */}
-        <div className="p-6 space-y-5 overflow-y-auto flex-1 text-xs">
-          {/* Status Message */}
+        {/* Tab Navigation */}
+        <div className="flex border-b border-slate-200 bg-slate-50 px-6 pt-2 text-xs font-black">
+          <button
+            onClick={() => setActiveTab('tabla')}
+            className={`py-3 px-4 border-b-2 flex items-center gap-2 cursor-pointer transition-all ${
+              activeTab === 'tabla'
+                ? 'border-emerald-700 text-emerald-900 bg-white rounded-t-xl shadow-2xs'
+                : 'border-transparent text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <Table className="w-4 h-4" />
+            <span>1. Tabla y Censo</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('vercel')}
+            className={`py-3 px-4 border-b-2 flex items-center gap-2 cursor-pointer transition-all ${
+              activeTab === 'vercel'
+                ? 'border-emerald-700 text-emerald-900 bg-white rounded-t-xl shadow-2xs'
+                : 'border-transparent text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <Globe className="w-4 h-4 text-emerald-700" />
+            <span>2. Guía Vercel & Guardado</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('sql')}
+            className={`py-3 px-4 border-b-2 flex items-center gap-2 cursor-pointer transition-all ${
+              activeTab === 'sql'
+                ? 'border-emerald-700 text-emerald-900 bg-white rounded-t-xl shadow-2xs'
+                : 'border-transparent text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <Code className="w-4 h-4" />
+            <span>3. Script SQL & Permisos RLS</span>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="p-6 overflow-y-auto space-y-5 text-xs">
+          {/* Mensaje de estado dinámico */}
           {statusMessage && (
             <div
-              className={`p-4 rounded-2xl border flex items-start gap-3 animate-in fade-in duration-200 ${
+              className={`p-3.5 rounded-2xl border flex items-start gap-2.5 ${
                 statusType === 'success'
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                   : statusType === 'error'
-                  ? 'bg-rose-50 border-rose-200 text-rose-900'
-                  : 'bg-yellow-50 border-yellow-200 text-yellow-900'
+                  ? 'bg-red-50 border-red-200 text-red-900'
+                  : 'bg-blue-50 border-blue-200 text-blue-900'
               }`}
             >
-              {statusType === 'success' ? (
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-              ) : statusType === 'error' ? (
-                <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-              ) : (
-                <RefreshCw className="w-5 h-5 text-yellow-600 shrink-0 mt-0.5 animate-spin" />
-              )}
-              <div className="flex-1 space-y-1">
-                <p className="font-bold leading-relaxed">{statusMessage}</p>
-                {totalRemoteCount !== null && (
-                  <p className="text-[11px] opacity-90">
-                    Total en base de datos: <strong>{totalRemoteCount} estudiantes</strong>
-                  </p>
-                )}
+              {statusType === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />}
+              {statusType === 'error' && <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />}
+              {statusType === 'info' && <RefreshCw className="w-4 h-4 text-blue-600 shrink-0 mt-0.5 animate-spin" />}
+              <span className="font-semibold">{statusMessage}</span>
+            </div>
+          )}
+
+          {/* TAB 1: TABLA Y CENSO */}
+          {activeTab === 'tabla' && (
+            <div className="space-y-5">
+              {/* Sección 1: Nombre de la Tabla en Supabase */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="font-black text-slate-800 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                    <Table className="w-3.5 h-3.5 text-emerald-700" />
+                    Nombre de la Tabla en Supabase:
+                  </label>
+                  <span className="text-[10px] text-slate-500 font-bold">Por defecto: Encuesta</span>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={currentTable}
+                    onChange={(e) => setCurrentTable(e.target.value)}
+                    placeholder="Ej: Encuesta o encuesta"
+                    className="flex-1 px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                  />
+                  <button
+                    onClick={() => handleTestAndInspect(currentTable)}
+                    disabled={loading}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                    <span>Probar Tabla</span>
+                  </button>
+                  <button
+                    onClick={handleTestWriteAndDelete}
+                    disabled={loading}
+                    className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-black transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                    title="Ejecutar prueba de crear y eliminar un registro en Supabase"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-yellow-300" />
+                    <span>Probar Guardar/Eliminar</span>
+                  </button>
+                </div>
+
                 {detectedColumns.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-emerald-200/60">
-                    <p className="text-[10px] uppercase font-black tracking-wider text-emerald-800">
-                      Columnas detectadas:
-                    </p>
-                    <div className="flex flex-wrap gap-1 mt-1">
+                  <div className="pt-2 border-t border-slate-200">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">
+                      Columnas detectadas en Supabase:
+                    </span>
+                    <div className="flex flex-wrap gap-1">
                       {detectedColumns.map((col) => (
                         <span
                           key={col}
-                          className="px-1.5 py-0.5 rounded bg-white text-emerald-900 border border-emerald-200 font-mono text-[10px]"
+                          className="px-2 py-0.5 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-emerald-950"
                         >
                           {col}
                         </span>
@@ -256,133 +427,194 @@ export const SupabaseSyncModal: React.FC<SupabaseSyncModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Sección 2: Cargar datos desde Supabase */}
+              <div className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-black text-emerald-950 text-sm flex items-center gap-2">
+                    <DownloadCloud className="w-4 h-4 text-emerald-700" />
+                    <span>Cargar Censo desde Supabase a la Aplicación</span>
+                  </h3>
+                </div>
+                <p className="text-slate-600 font-medium">
+                  Descarga todas las respuestas de la tabla seleccionada y actualiza el directorio escolar en tiempo real.
+                </p>
+                <button
+                  onClick={handlePullAllFromSupabase}
+                  disabled={loading}
+                  className="w-full py-3 bg-[#15803D] hover:bg-emerald-800 text-white font-black rounded-xl transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 active:scale-98"
+                >
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                  <span>Sincronizar y Cargar Estudiantes de Supabase</span>
+                </button>
+              </div>
+
+              {/* Sección 3: Importar CSV de Google Forms */}
+              <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-black text-amber-950 text-sm flex items-center gap-2">
+                    <FileSpreadsheet className="w-4 h-4 text-amber-700" />
+                    <span>Importar Archivo CSV Directo (Google Forms)</span>
+                  </h3>
+                </div>
+                <p className="text-slate-600 font-medium">
+                  Si descargaste el archivo .CSV de las respuestas de Google Forms, súbelo aquí para importar todos los registros automáticamente.
+                </p>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  accept=".csv"
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={loading}
+                  className="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white font-black rounded-xl transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Seleccionar Archivo CSV de Google Forms</span>
+                </button>
+              </div>
             </div>
           )}
 
-          {/* Opción 1: Carga directa desde Supabase */}
-          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-                <Table className="w-4 h-4 text-emerald-700" />
-                1. Sincronizar desde Tabla Supabase:
-              </label>
-              <span className="text-[10px] text-slate-400 font-mono">
-                URL: {SUPABASE_URL.replace('https://', '').split('.')[0]}...
-              </span>
-            </div>
-
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={currentTable}
-                onChange={(e) => setCurrentTable(e.target.value)}
-                placeholder="Nombre de la tabla (ej. reportes_gidelca, estudiantes...)"
-                className="flex-1 px-3.5 py-2 rounded-xl bg-white border border-slate-300 font-mono text-xs text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-600"
-              />
-              <button
-                type="button"
-                onClick={() => handleTestAndInspect(currentTable)}
-                disabled={loading}
-                className="px-3 py-2 rounded-xl font-black bg-slate-200 hover:bg-slate-300 text-slate-800 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                Probar
-              </button>
-              <button
-                type="button"
-                onClick={handlePullAllFromSupabase}
-                disabled={loading}
-                className="px-4 py-2 rounded-xl font-black bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
-              >
-                <DownloadCloud className="w-3.5 h-3.5" />
-                Cargar
-              </button>
-            </div>
-
-            {/* Sugerencias de tablas */}
-            <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-slate-500">
-              <span>Tabla censo:</span>
-              {['Encuesta', 'encuesta', 'reportes_gidelca', 'estudiantes'].map((tbl) => (
-                <button
-                  key={tbl}
-                  type="button"
-                  onClick={() => {
-                    setCurrentTable(tbl);
-                    handleTestAndInspect(tbl);
-                  }}
-                  className={`px-2.5 py-1 rounded-xl border font-mono text-[11px] font-black transition-colors cursor-pointer ${
-                    currentTable === tbl
-                      ? 'bg-[#15803D] text-white border-[#15803D] shadow-xs'
-                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
-                  }`}
-                >
-                  {tbl}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Opción 2: Importar archivo CSV/Excel de Google Forms */}
-          <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-black text-emerald-950 flex items-center gap-1.5">
-                <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
-                2. Importar Respuestas de Google Forms (.CSV / Excel):
-              </label>
-            </div>
-            <p className="text-[11px] text-emerald-800 font-medium leading-relaxed">
-              Si tienes el archivo de respuestas de Google Forms descargado en tu computador (los 1,270 registros), puedes importarlo directamente aquí:
-            </p>
-
-            <input
-              type="file"
-              ref={fileInputRef}
-              accept=".csv,.tsv,.txt"
-              onChange={handleFileUpload}
-              className="hidden"
-              id="csv-file-input"
-            />
-
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={loading}
-              className="w-full py-3 px-4 rounded-2xl bg-emerald-700 hover:bg-emerald-800 text-white font-black flex items-center justify-center gap-2 shadow-md shadow-emerald-200 transition-all cursor-pointer disabled:opacity-50"
-            >
-              <Upload className="w-4 h-4" />
-              <span>Seleccionar archivo CSV de Google Forms (1,270 Estudiantes)</span>
-            </button>
-          </div>
-
-          {/* Script SQL opcional */}
-          <div className="rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="bg-slate-100 px-4 py-2 flex items-center justify-between border-b border-slate-200">
-              <div className="flex items-center gap-2 text-slate-700 font-bold text-[11px]">
-                <Code className="w-4 h-4 text-emerald-700" />
-                <span>Script SQL para Supabase (Opcional)</span>
+          {/* TAB 2: GUÍA VERCEL & PERSISTENCIA */}
+          {activeTab === 'vercel' && (
+            <div className="space-y-4">
+              <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-200 space-y-2">
+                <h3 className="font-black text-emerald-950 text-sm flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-emerald-700" />
+                  <span>¿Por qué no guardaba al desplegar en Vercel?</span>
+                </h3>
+                <p className="text-slate-700 font-medium leading-relaxed">
+                  Para que las aplicaciones Vite guarden en Supabase desde Vercel se requieren dos pasos clave:
+                </p>
+                <ol className="list-decimal list-inside space-y-1.5 text-slate-800 font-semibold pl-1">
+                  <li>
+                    <strong>Variables con prefijo <code className="bg-white px-1.5 py-0.5 rounded text-emerald-800 font-mono">VITE_</code>:</strong> En Vercel se deben configurar <code className="bg-white px-1 py-0.5 rounded text-emerald-800 font-mono">VITE_SUPABASE_URL</code> y <code className="bg-white px-1 py-0.5 rounded text-emerald-800 font-mono">VITE_SUPABASE_ANON_KEY</code>.
+                  </li>
+                  <li>
+                    <strong>Permisos RLS en Supabase:</strong> Si la tabla tiene Row Level Security (RLS) activo, Supabase bloquea los <code className="bg-white px-1 py-0.5 rounded font-mono">INSERT</code> y <code className="bg-white px-1 py-0.5 rounded font-mono">UPDATE</code> del rol <code className="font-mono">anon</code> a menos que se aplique la política de la pestaña 3.
+                  </li>
+                </ol>
               </div>
-              <button
-                onClick={copySql}
-                className="px-2 py-0.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-[11px] font-black text-slate-700 flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
-              >
-                {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3 text-slate-500" />}
-                <span>{copied ? '¡Copiado!' : 'Copiar SQL'}</span>
-              </button>
+
+              {/* Configuración rápida de credenciales en navegador */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+                <h4 className="font-black text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-emerald-700" />
+                  Configurar Credenciales de Supabase en esta Sesión:
+                </h4>
+
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block mb-0.5">
+                      Supabase Project URL:
+                    </label>
+                    <input
+                      type="text"
+                      value={customUrl}
+                      onChange={(e) => setCustomUrl(e.target.value)}
+                      placeholder="https://xxxx.supabase.co"
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-xs text-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block mb-0.5">
+                      Supabase Anon Public API Key:
+                    </label>
+                    <input
+                      type="text"
+                      value={customKey}
+                      onChange={(e) => setCustomKey(e.target.value)}
+                      placeholder="eyJhbGciOi..."
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-xs text-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={handleSaveCredentials}
+                    className="flex-1 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-black rounded-xl transition-all shadow-xs cursor-pointer text-center"
+                  >
+                    Guardar y Conectar
+                  </button>
+                  <button
+                    onClick={copyVercelEnv}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                    title="Copiar formato para Vercel Environment Variables"
+                  >
+                    {copiedVercel ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedVercel ? '¡Copiado!' : 'Copiar para Vercel'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Pasos en Vercel */}
+              <div className="p-4 bg-slate-900 text-slate-200 rounded-2xl space-y-2 text-[11px]">
+                <span className="text-yellow-400 font-black uppercase text-[10px] tracking-wider block">
+                  Pasos para configurar en Vercel Dashboard:
+                </span>
+                <p>1. Ve a tu proyecto en <strong>vercel.com</strong> → <strong>Settings</strong> → <strong>Environment Variables</strong>.</p>
+                <p>2. Agrega la variable <strong><code className="text-yellow-300">VITE_SUPABASE_URL</code></strong> con tu URL de Supabase.</p>
+                <p>3. Agrega la variable <strong><code className="text-yellow-300">VITE_SUPABASE_ANON_KEY</code></strong> con tu clave anon de Supabase.</p>
+                <p>4. Haz clic en <strong>Redeploy</strong> para aplicar los cambios.</p>
+              </div>
             </div>
-            <pre className="p-3 bg-slate-950 text-emerald-400 font-mono text-[10px] leading-relaxed overflow-x-auto max-h-28">
-              {SUPABASE_SCHEMA_SQL}
-            </pre>
-          </div>
+          )}
+
+          {/* TAB 3: SCRIPT SQL & RLS */}
+          {activeTab === 'sql' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-black text-slate-900 text-sm">
+                    Script SQL para Habilitar Guardado y Permisos en Supabase
+                  </h3>
+                  <p className="text-slate-500 font-medium">
+                    Ejecuta este código en el <strong>SQL Editor</strong> de Supabase para permitir guardar y editar sin bloqueos RLS.
+                  </p>
+                </div>
+                <button
+                  onClick={copySql}
+                  className="px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  {copied ? <Check className="w-4 h-4 text-yellow-300" /> : <Copy className="w-4 h-4" />}
+                  <span>{copied ? '¡Copiado!' : 'Copiar SQL'}</span>
+                </button>
+              </div>
+
+              <div className="relative">
+                <pre className="p-4 rounded-2xl bg-slate-900 text-emerald-300 font-mono text-[11px] overflow-x-auto border border-slate-800 leading-relaxed max-h-72">
+                  {SUPABASE_SCHEMA_SQL}
+                </pre>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={handleTestWriteAndDelete}
+                  disabled={loading}
+                  className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-black rounded-xl flex items-center gap-2 cursor-pointer shadow-md disabled:opacity-50 transition-all"
+                >
+                  <ShieldCheck className="w-4 h-4 text-yellow-300" />
+                  <span>Verificar Permisos de Escritura y Eliminación</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Modal Footer */}
-        <div className="bg-slate-50 px-6 py-3 border-t border-slate-200 flex items-center justify-between">
-          <p className="text-[11px] text-slate-500">
-            Estudiantes cargados en memoria: <strong>{estudiantes.length}</strong>
-          </p>
+        <div className="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex items-center justify-between text-xs">
+          <span className="text-slate-500 font-medium">
+            Estado de conexión: <strong>{estudiantes.length} estudiantes en memoria</strong>
+          </span>
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-black text-xs transition-colors cursor-pointer"
+            className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-black rounded-xl transition-all cursor-pointer"
           >
             Cerrar
           </button>

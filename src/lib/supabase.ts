@@ -1,11 +1,47 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { EstudianteReporte, NivelUrgencia, TipoAyuda, HistorialAyuda, AyudasContador } from '../types';
 import { repararTextoEspecial, limpiarTelefono } from './textCleaner';
 
-export const SUPABASE_URL = 'https://gpgobcwayrbksqrpvhfk.supabase.co';
-export const SUPABASE_ANON_KEY = 'sb_publishable_JdOG8jM0G6_mapL2LxA47g_Q5L5bnJx';
+const CUSTOM_URL_STORAGE_KEY = 'gidelca_custom_supabase_url';
+const CUSTOM_KEY_STORAGE_KEY = 'gidelca_custom_supabase_key';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export function getSupabaseUrl(): string {
+  try {
+    const saved = localStorage.getItem(CUSTOM_URL_STORAGE_KEY);
+    if (saved && saved.trim()) return saved.trim();
+  } catch {}
+  return (import.meta as any).env?.VITE_SUPABASE_URL || 'https://gpgobcwayrbksqrpvhfk.supabase.co';
+}
+
+export function getSupabaseAnonKey(): string {
+  try {
+    const saved = localStorage.getItem(CUSTOM_KEY_STORAGE_KEY);
+    if (saved && saved.trim()) return saved.trim();
+  } catch {}
+  return (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || 'sb_publishable_JdOG8jM0G6_mapL2LxA47g_Q5L5bnJx';
+}
+
+export let SUPABASE_URL = getSupabaseUrl();
+export let SUPABASE_ANON_KEY = getSupabaseAnonKey();
+
+export let supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+export function actualizarCredencialesSupabase(newUrl: string, newKey: string): SupabaseClient {
+  const url = newUrl.trim();
+  const key = newKey.trim();
+  try {
+    if (url) localStorage.setItem(CUSTOM_URL_STORAGE_KEY, url);
+    else localStorage.removeItem(CUSTOM_URL_STORAGE_KEY);
+
+    if (key) localStorage.setItem(CUSTOM_KEY_STORAGE_KEY, key);
+    else localStorage.removeItem(CUSTOM_KEY_STORAGE_KEY);
+  } catch {}
+
+  SUPABASE_URL = url || getSupabaseUrl();
+  SUPABASE_ANON_KEY = key || getSupabaseAnonKey();
+  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return supabase;
+}
 
 // Nombre de la tabla principal según la configuración
 export const DEFAULT_TABLE_NAME = 'Encuesta';
@@ -14,6 +50,7 @@ export const DEFAULT_TABLE_NAME = 'Encuesta';
 export const EVENTS_TABLE_NAME = 'entregas_ayudas';
 
 const DELETED_STUDENTS_STORAGE_KEY = 'gidelca_renace_deleted_students_v1';
+const LOCAL_CUSTOM_STUDENTS_KEY = 'gidelca_renace_local_students_v1';
 
 /**
  * Obtiene la lista de identificadores de estudiantes eliminados localmente
@@ -57,9 +94,29 @@ export function desmarcarEstudianteEliminado(identifier: string) {
 }
 
 /**
+ * Guarda copia de respaldo local de los estudiantes para persistencia inmediata
+ */
+export function guardarEstudiantesLocalesEnCache(estudiantes: EstudianteReporte[]) {
+  try {
+    localStorage.setItem(LOCAL_CUSTOM_STUDENTS_KEY, JSON.stringify(estudiantes));
+  } catch (e) {
+    console.warn('Error guardando caché local:', e);
+  }
+}
+
+export function obtenerEstudiantesLocalesEnCache(): EstudianteReporte[] {
+  try {
+    const saved = localStorage.getItem(LOCAL_CUSTOM_STUDENTS_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Normaliza nombres de columnas eliminando tildes y signos para matching flexible
  */
-function cleanKey(key: string): string {
+export function cleanKey(key: string): string {
   return key
     .toLowerCase()
     .normalize('NFD')
@@ -120,132 +177,172 @@ export function normalizarEstudianteDesdeSupabase(rawRow: any, index = 0): Estud
     ]) ||
     'Sin Grado'
   ).trim();
-  rawGrado = normalizarCodigoGrado(rawGrado);
 
-  // 3. ID de base de datos y ID de la aplicación
-  const raw_db_id = rawRow.id ?? rawRow.ID ?? rawRow.uuid ?? rawRow._id ?? rawRow.id_encuesta ?? rawRow.id_estudiante;
-  const slugNombre = cleanKey(rawNombre);
-  const slugGrado = cleanKey(rawGrado);
-  const id = String(
-    raw_db_id ||
-    `gid_${slugGrado}_${slugNombre}_${index}`
+  const grado = normalizarCodigoGrado(rawGrado);
+
+  // 3. Nombre del Acudiente
+  const nombre_acudiente = repararTextoEspecial(
+    String(
+      rawRow.nombre_acudiente ||
+      findVal([
+        'nombreacudiente',
+        'acudiente',
+        'padremadre',
+        'responsable',
+        'representante'
+      ]) ||
+      ''
+    ).trim()
   );
 
-  // 4. Fecha de reporte
-  const fecha_reporte = String(
-    rawRow.fecha_reporte ||
-    findVal(['fechareporte', 'marcatemporal', 'timestamp', 'fecha', 'createdat']) ||
-    new Date().toISOString().split('T')[0]
-  );
-
-  // 5. Acudiente (reparando caracteres especiales)
-  let nombre_acudiente = String(
-    rawRow.nombre_acudiente ||
-    findVal(['nombreacudiente', 'nombredelacudiente', 'acudiente', 'padremadre', 'responsable']) ||
-    ''
-  ).trim();
-  nombre_acudiente = repararTextoEspecial(nombre_acudiente);
-
-  // 6. Teléfono
+  // 4. Teléfono
   const telefono = limpiarTelefono(
     String(
       rawRow.telefono ||
-      findVal(['telefono', 'telefonodelacudiente', 'numerodecelular', 'celular', 'contacto']) ||
+      findVal(['telefono', 'celular', 'contacto', 'movil', 'telefonocontacto']) ||
       ''
     )
   );
 
-  // 7. Dirección
-  let direccion = String(
-    rawRow.direccion ||
-    findVal(['direccion', 'direccionderesidencia', 'residencia', 'lugarderesidencia']) ||
-    ''
-  ).trim();
-  direccion = repararTextoEspecial(direccion);
+  // 5. Dirección y Ubicación
+  const direccion = repararTextoEspecial(
+    String(
+      rawRow.direccion ||
+      findVal(['direccion', 'residencia', 'domicilio', 'direcion']) ||
+      ''
+    ).trim()
+  );
 
-  // 8. Ubicación
-  let ubicacion = String(
-    rawRow.ubicacion ||
-    findVal(['ubicacion', 'barrioovereda', 'barrio', 'vereda', 'sector', 'zona']) ||
-    direccion ||
-    'Calima El Darién'
-  ).trim();
-  ubicacion = repararTextoEspecial(ubicacion);
+  const ubicacion = repararTextoEspecial(
+    String(
+      rawRow.ubicacion ||
+      findVal([
+        'ubicacion',
+        'sector',
+        'barrio',
+        'vereda',
+        'zona',
+        'municipio',
+        'lugar'
+      ]) ||
+      'Calima El Darién'
+    ).trim()
+  );
 
-  // 9. Lesiones Físicas
-  const leciones_fisicas = String(
-    rawRow.leciones_fisicas ||
-    rawRow.lesiones_fisicas ||
-    findVal(['lecionesfisicas', 'lesionesfisicas', 'presentalesionesfisicas', 'lesiones']) ||
-    'No'
-  ).trim();
+  // 6. Lesiones Físicas
+  const leciones_fisicas = repararTextoEspecial(
+    String(
+      rawRow.leciones_fisicas ||
+      findVal([
+        'lecionesfisicas',
+        'lesionesfisicas',
+        'lesiones',
+        'saludfisica',
+        'heridas',
+        'golpes'
+      ]) ||
+      'Ninguna reportada'
+    ).trim()
+  );
 
-  // 10. Salud Emocional
-  let salud_emocional = String(
-    rawRow.salud_emocional ||
-    findVal(['saludemocional', 'afectacionemocional', 'estadopsicologico', 'emocional']) ||
-    'Estable'
-  ).trim();
-  salud_emocional = repararTextoEspecial(salud_emocional);
+  // 7. Salud Emocional
+  const salud_emocional = repararTextoEspecial(
+    String(
+      rawRow.salud_emocional ||
+      findVal([
+        'saludemocional',
+        'emocional',
+        'psicologico',
+        'afectacionemocional',
+        'estadoanimo'
+      ]) ||
+      'Estable'
+    ).trim()
+  );
 
-  // 11. Condición de Vivienda
-  let condicion_vivienda = String(
-    rawRow.condicion_vivienda ||
-    findVal(['condicionvivienda', 'estadodelavivienda', 'condiciondevivienda', 'vivienda']) ||
-    'Habitable'
-  ).trim();
-  condicion_vivienda = repararTextoEspecial(condicion_vivienda);
+  // 8. Condición de la Vivienda
+  const condicion_vivienda = repararTextoEspecial(
+    String(
+      rawRow.condicion_vivienda ||
+      findVal([
+        'condicionvivienda',
+        'vivienda',
+        'estadovivienda',
+        'casa',
+        'dañovivienda',
+        'techo'
+      ]) ||
+      'Habitable'
+    ).trim()
+  );
 
-  // 12. Ayuda Prioritaria (conservando opciones múltiples del formulario)
-  let ayuda_prioritaria = String(
-    rawRow.ayuda_prioritaria ||
-    findVal(['ayudaprioritaria', 'tipoayuda', 'ayudarequerida', 'prioridad', 'necesidad', 'requierenayudaprioritaria', 'ayudaprioritariaenestemomento']) ||
-    'Alimentos no perecederos y agua potable'
-  ).trim();
-  ayuda_prioritaria = repararTextoEspecial(ayuda_prioritaria);
+  // 9. Ayuda Prioritaria Solicitada
+  const ayuda_prioritaria = repararTextoEspecial(
+    String(
+      rawRow.ayuda_prioritaria ||
+      findVal([
+        'ayudaprioritaria',
+        'ayudaurgente',
+        'necesidad',
+        'requerimiento',
+        'tipoayuda'
+      ]) ||
+      'Alimentos no perecederos'
+    ).trim()
+  );
 
-  // 13. Conectividad (conservando opciones múltiples del formulario)
-  let conectividad = String(
-    rawRow.conectividad ||
-    findVal(['conectividad', 'mediosdeconectividad', 'internet', 'accesoainternet', 'conexion', 'dispositivos']) ||
-    'Conexión a internet estable y computador/tablet propia'
-  ).trim();
-  conectividad = repararTextoEspecial(conectividad);
+  // 10. Conectividad
+  const conectividad = repararTextoEspecial(
+    String(
+      rawRow.conectividad ||
+      findVal([
+        'conectividad',
+        'internet',
+        'dispositivos',
+        'computador',
+        'accesoainternet',
+        'senalinformatica'
+      ]) ||
+      'Conexión estable'
+    ).trim()
+  );
 
-  // Estructura de ayudas inicial
+  // 11. Fecha del reporte
+  const fecha_reporte = String(
+    rawRow.fecha_reporte ||
+    rawRow.created_at ||
+    findVal(['fechareporte', 'marcafechahora', 'timestamp', 'fecha']) ||
+    new Date().toISOString().split('T')[0]
+  ).split('T')[0];
+
+  // 12. ID único persistente
+  const raw_db_id = rawRow.id !== undefined && rawRow.id !== null ? rawRow.id : undefined;
+  const id = raw_db_id ? String(raw_db_id) : `gid_${index + 1}_${cleanKey(rawNombre).slice(0, 10)}`;
+
+  // 13. Ayudas entregadas iniciales
   const ayudas_entregadas: AyudasContador = {
-    Alimento: 0,
-    Medicamento: 0,
-    Ropa: 0,
-    Emocional: 0,
-    Construccion: 0
+    Alimento: Number(rawRow.ayudas_alimento || rawRow.alimentos_entregados || 0),
+    Medicamento: Number(rawRow.ayudas_medicamento || rawRow.medicamentos_entregados || 0),
+    Ropa: Number(rawRow.ayudas_ropa || rawRow.ropa_entregada || 0),
+    Emocional: Number(rawRow.ayudas_emocional || rawRow.emocional_entregado || 0),
+    Construccion: Number(rawRow.ayudas_construccion || rawRow.construccion_entregada || 0)
   };
 
   const historial_ayudas: HistorialAyuda[] = [];
 
-  const parcial: Partial<EstudianteReporte> = {
-    id,
-    nombre_estudiante: rawNombre,
-    grado: rawGrado,
-    nombre_acudiente,
-    telefono,
-    direccion,
-    ubicacion,
+  // 14. Calcular nivel de urgencia diagnóstico
+  const nivel_urgencia: NivelUrgencia = calcularUrgenciaAutomatica({
     leciones_fisicas,
     salud_emocional,
     condicion_vivienda,
-    ayuda_prioritaria,
-    conectividad,
-    fecha_reporte
-  };
-
-  const nivel_urgencia = rawRow.nivel_urgencia || calcularNivelUrgencia(parcial);
+    ayuda_prioritaria
+  });
 
   return {
     id,
     fecha_reporte,
     nombre_estudiante: rawNombre,
-    grado: rawGrado,
+    grado,
     nombre_acudiente,
     telefono,
     direccion,
@@ -374,10 +471,11 @@ CREATE TABLE IF NOT EXISTS public."Encuesta" (
     nivel_urgencia TEXT
 );
 
--- Habilitar RLS y permitir todas las operaciones (SELECT, INSERT, UPDATE, DELETE) para anon
+-- Habilitar RLS y otorgar permisos completos (SELECT, INSERT, UPDATE, DELETE) para anon y authenticated
 ALTER TABLE public."Encuesta" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Permitir todo a usuarios anon en Encuesta" ON public."Encuesta";
 CREATE POLICY "Permitir todo a usuarios anon en Encuesta" ON public."Encuesta"
-FOR ALL TO anon USING (true) WITH CHECK (true);
+FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
 -- 2. Tabla adicional de eventos de entregas de ayudas sincronizadas en línea
 CREATE TABLE IF NOT EXISTS public.entregas_ayudas (
@@ -394,8 +492,9 @@ CREATE TABLE IF NOT EXISTS public.entregas_ayudas (
 );
 
 ALTER TABLE public.entregas_ayudas ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Permitir todo a usuarios anon en entregas_ayudas" ON public.entregas_ayudas;
 CREATE POLICY "Permitir todo a usuarios anon en entregas_ayudas" ON public.entregas_ayudas
-FOR ALL TO anon USING (true) WITH CHECK (true);
+FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 `;
 
 /**
@@ -448,29 +547,24 @@ export async function cargarTodosLosEstudiantesSupabase(tableName = DEFAULT_TABL
     let from = 0;
     let to = PAGE_SIZE - 1;
     let hasMore = true;
-    let iterations = 0;
-    let usedTableName = tableName;
 
-    // Intentar primero con el nombre exacto de la tabla (ej. Encuesta o encuesta)
-    while (hasMore && iterations < 5) {
-      iterations++;
-      let { data, error } = await supabase
-        .from(usedTableName)
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from(tableName)
         .select('*')
         .range(from, to);
 
-      // Si falla y es 'Encuesta', probar con minúsculas 'encuesta' o viceversa
-      if (error && iterations === 1) {
-        const altName = usedTableName === 'Encuesta' ? 'encuesta' : 'Encuesta';
-        const altResponse = await supabase.from(altName).select('*').range(from, to);
-        if (!altResponse.error && altResponse.data) {
-          usedTableName = altName;
-          data = altResponse.data;
-          error = null;
-        }
-      }
-
       if (error) {
+        // Reintentar en minúsculas si fue problema de mayúsculas
+        const altTable = tableName === 'Encuesta' ? 'encuesta' : 'Encuesta';
+        const retry = await supabase.from(altTable).select('*').range(from, to);
+        if (!retry.error && retry.data) {
+          allRows.push(...retry.data);
+          hasMore = retry.data.length === PAGE_SIZE;
+          from += PAGE_SIZE;
+          to += PAGE_SIZE;
+          continue;
+        }
         return { data: [], error };
       }
 
@@ -487,12 +581,10 @@ export async function cargarTodosLosEstudiantesSupabase(tableName = DEFAULT_TABL
       }
     }
 
-    // Filtrar los estudiantes que fueron eliminados por el usuario
     const eliminados = obtenerEstudiantesEliminados();
 
-    // Normalizar todos los estudiantes de la encuesta excluyendo eliminados
-    const estudiantes = allRows
-      .map((r, i) => normalizarEstudianteDesdeSupabase(r, i))
+    const estudiantes: EstudianteReporte[] = allRows
+      .map((row, idx) => normalizarEstudianteDesdeSupabase(row, idx))
       .filter((e) => {
         const keyClean = cleanKey(e.nombre_estudiante);
         const originalClean = e.raw_nombre_original ? cleanKey(e.raw_nombre_original) : '';
@@ -579,7 +671,6 @@ export async function registrarEventoAyudaEnSupabase(
 ): Promise<{ success: boolean; id: string; error: any }> {
   try {
     const eventId = `ayuda_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
     const payload = {
       id: eventId,
       estudiante_id: estudiante.id,
@@ -587,16 +678,15 @@ export async function registrarEventoAyudaEnSupabase(
       grado: estudiante.grado,
       tipo_ayuda: tipo,
       cantidad,
-      fecha,
-      responsable,
-      observaciones,
-      created_at: new Date().toISOString()
+      fecha: fecha || new Date().toISOString().split('T')[0],
+      responsable: responsable || 'Comité Gidelca',
+      observaciones: observaciones || ''
     };
 
     const { error } = await supabase.from(EVENTS_TABLE_NAME).insert([payload]);
 
     if (error) {
-      console.warn('Error al sincronizar evento en entregas_ayudas:', error.message);
+      console.warn('Error guardando evento en entregas_ayudas:', error.message);
       return { success: false, id: eventId, error };
     }
 
@@ -632,21 +722,28 @@ export async function eliminarEventoAyudaEnSupabase(
 }
 
 /**
- * Guarda o actualiza un estudiante en la tabla principal (Encuesta)
+ * Detecta las columnas reales que existen en la tabla de Supabase para mapear el payload
  */
-export async function guardarEstudianteEnSupabase(
-  estudiante: EstudianteReporte,
-  tableName = DEFAULT_TABLE_NAME
-): Promise<{ success: boolean; error: any }> {
+async function obtenerColumnasTabla(tableName: string): Promise<string[]> {
   try {
-    // Si estaba previamente marcado como eliminado, removerlo de la lista negra
-    desmarcarEstudianteEliminado(estudiante.id);
-    desmarcarEstudianteEliminado(cleanKey(estudiante.nombre_estudiante));
-    if (estudiante.raw_db_id) {
-      desmarcarEstudianteEliminado(String(estudiante.raw_db_id));
+    const { data } = await supabase.from(tableName).select('*').limit(1);
+    if (data && data.length > 0) {
+      return Object.keys(data[0]);
     }
+  } catch {}
+  return [];
+}
 
-    const payload: Record<string, any> = {
+/**
+ * Construye el payload adaptándose dinámicamente a las columnas existentes en Supabase
+ */
+function construirPayloadAdaptado(
+  estudiante: EstudianteReporte,
+  columnasExistentes: string[]
+): Record<string, any> {
+  // Si no se detectaron columnas (tabla vacía o error), usar formato estándar
+  if (columnasExistentes.length === 0) {
+    const fallback: Record<string, any> = {
       fecha_reporte: estudiante.fecha_reporte || new Date().toISOString().split('T')[0],
       nombre_estudiante: estudiante.nombre_estudiante,
       grado: estudiante.grado,
@@ -657,38 +754,123 @@ export async function guardarEstudianteEnSupabase(
       salud_emocional: estudiante.salud_emocional || 'Estable',
       ubicacion: estudiante.ubicacion || 'Calima El Darién',
       condicion_vivienda: estudiante.condicion_vivienda || 'Habitable',
-      ayuda_prioritaria: estudiante.ayuda_prioritaria || 'Alimento',
-      conectividad: estudiante.conectividad || 'Buena'
+      ayuda_prioritaria: estudiante.ayuda_prioritaria || 'Alimentos no perecederos',
+      conectividad: estudiante.conectividad || 'Conexión estable'
     };
-
     if (estudiante.raw_db_id) {
-      payload.id = estudiante.raw_db_id;
-    } else if (estudiante.id && !estudiante.id.startsWith('gid_')) {
-      payload.id = estudiante.id;
+      fallback.id = estudiante.raw_db_id;
+    }
+    return fallback;
+  }
+
+  const payload: Record<string, any> = {};
+
+  const mapToCol = (keywords: string[], value: any) => {
+    for (const kw of keywords) {
+      const cleanKw = cleanKey(kw);
+      // Coincidencia exacta
+      const exact = columnasExistentes.find((c) => cleanKey(c) === cleanKw);
+      if (exact) {
+        payload[exact] = value;
+        return;
+      }
+      // Coincidencia parcial
+      const partial = columnasExistentes.find((c) => cleanKey(c).includes(cleanKw));
+      if (partial) {
+        payload[partial] = value;
+        return;
+      }
+    }
+  };
+
+  mapToCol(['nombre_estudiante', 'nombres_y_apellidos', 'nombre_completo', 'nombre', 'estudiante'], estudiante.nombre_estudiante);
+  mapToCol(['grado', 'grado_y_grupo', 'grupo', 'curso'], estudiante.grado);
+  mapToCol(['nombre_acudiente', 'acudiente', 'padremadre', 'responsable'], estudiante.nombre_acudiente || '');
+  mapToCol(['telefono', 'celular', 'contacto', 'movil'], estudiante.telefono || '');
+  mapToCol(['direccion', 'residencia', 'domicilio'], estudiante.direccion || '');
+  mapToCol(['ubicacion', 'sector', 'barrio', 'vereda', 'zona'], estudiante.ubicacion || 'Calima El Darién');
+  mapToCol(['leciones_fisicas', 'lesiones', 'salud_fisica', 'heridas'], estudiante.leciones_fisicas || 'No');
+  mapToCol(['salud_emocional', 'emocional', 'psicologico', 'estado_animo'], estudiante.salud_emocional || 'Estable');
+  mapToCol(['condicion_vivienda', 'vivienda', 'estado_vivienda', 'casa'], estudiante.condicion_vivienda || 'Habitable');
+  mapToCol(['ayuda_prioritaria', 'ayuda_urgente', 'necesidad', 'tipo_ayuda'], estudiante.ayuda_prioritaria || 'Alimentos no perecederos');
+  mapToCol(['conectividad', 'internet', 'dispositivos'], estudiante.conectividad || 'Conexión estable');
+  mapToCol(['fecha_reporte', 'fecha', 'marca_temporal', 'timestamp'], estudiante.fecha_reporte || new Date().toISOString().split('T')[0]);
+
+  // Manejo de ID sólo si existe en las columnas y es un id válido
+  const idCol = columnasExistentes.find((c) => cleanKey(c) === 'id');
+  if (idCol && estudiante.raw_db_id) {
+    payload[idCol] = estudiante.raw_db_id;
+  }
+
+  return payload;
+}
+
+/**
+ * Guarda o actualiza un estudiante en la tabla principal (Encuesta)
+ */
+export async function guardarEstudianteEnSupabase(
+  estudiante: EstudianteReporte,
+  tableName = DEFAULT_TABLE_NAME
+): Promise<{ success: boolean; error: any; message?: string }> {
+  try {
+    // Si estaba previamente marcado como eliminado, removerlo de la lista negra
+    desmarcarEstudianteEliminado(estudiante.id);
+    desmarcarEstudianteEliminado(cleanKey(estudiante.nombre_estudiante));
+    if (estudiante.raw_db_id) {
+      desmarcarEstudianteEliminado(String(estudiante.raw_db_id));
     }
 
-    // Intentar upsert o insert en la tabla especificada
-    let { error } = await supabase.from(tableName).upsert(payload);
+    const targetTables = [tableName, tableName === 'Encuesta' ? 'encuesta' : 'Encuesta'];
 
-    // Si falló por case sensitivity (Encuesta vs encuesta), reintentar
-    if (error) {
-      const altName = tableName === 'Encuesta' ? 'encuesta' : 'Encuesta';
-      const retry = await supabase.from(altName).upsert(payload);
-      if (!retry.error) {
-        return { success: true, error: null };
+    for (const tbl of targetTables) {
+      const columnas = await obtenerColumnasTabla(tbl);
+      const payload = construirPayloadAdaptado(estudiante, columnas);
+
+      // 1. Si el estudiante ya tiene un ID de base de datos o nombre previo, intentar UPDATE primero
+      const idCol = columnas.find((c) => cleanKey(c) === 'id');
+      const nameCol = columnas.find((c) =>
+        ['nombreestudiante', 'nombredelestudiante', 'nombresyapellidosdelestudiante', 'nombre'].includes(cleanKey(c))
+      );
+
+      if (estudiante.raw_db_id && idCol) {
+        const updateRes = await supabase.from(tbl).update(payload).eq(idCol, estudiante.raw_db_id);
+        if (!updateRes.error) {
+          return { success: true, error: null, message: 'Estudiante actualizado en Supabase' };
+        }
       }
-      // Si upsert falló por falta de primary key 'id', probar insert directo
-      const insertTry = await supabase.from(tableName).insert([payload]);
-      if (!insertTry.error) {
-        return { success: true, error: null };
+
+      if (nameCol && (estudiante.raw_nombre_original || estudiante.nombre_estudiante)) {
+        const targetName = estudiante.raw_nombre_original || estudiante.nombre_estudiante;
+        const updateByName = await supabase.from(tbl).update(payload).ilike(nameCol, targetName);
+        if (!updateByName.error && updateByName.data) {
+          return { success: true, error: null, message: 'Estudiante actualizado en Supabase' };
+        }
       }
-      return { success: false, error: insertTry.error || error };
+
+      // 2. Si es nuevo o no se actualizó, hacer INSERT
+      const insertRes = await supabase.from(tbl).insert([payload]);
+      if (!insertRes.error) {
+        return { success: true, error: null, message: 'Estudiante creado en Supabase' };
+      }
+
+      // Si falló por RLS, retornar error explícito
+      if (insertRes.error.code === '42501' || insertRes.error.message.includes('row-level security')) {
+        return {
+          success: false,
+          error: insertRes.error,
+          message: 'Error de permisos RLS en Supabase. Ejecuta el script SQL en Supabase para autorizar escrituras.'
+        };
+      }
     }
 
-    return { success: true, error: null };
-  } catch (err) {
+    return {
+      success: false,
+      error: new Error('No se pudo guardar en Supabase'),
+      message: 'No se pudo insertar en la tabla de Supabase. Verifique las columnas o políticas RLS.'
+    };
+  } catch (err: any) {
     console.warn('Fallo guardando estudiante en Supabase:', err);
-    return { success: false, error: err };
+    return { success: false, error: err, message: err?.message || 'Error de conexión' };
   }
 }
 
@@ -698,7 +880,7 @@ export async function guardarEstudianteEnSupabase(
 export async function eliminarEstudianteEnSupabase(
   estudiante: EstudianteReporte,
   tableName = DEFAULT_TABLE_NAME
-): Promise<{ success: boolean; error: any }> {
+): Promise<{ success: boolean; error: any; message?: string }> {
   // 1. Guardar de inmediato en la lista negra local para garantizar que NUNCA reaparezca al recargar
   marcarEstudianteEliminado(estudiante.id);
   marcarEstudianteEliminado(cleanKey(estudiante.nombre_estudiante));
@@ -716,68 +898,91 @@ export async function eliminarEstudianteEnSupabase(
       estudiante.raw_nombre_original
     ].filter(Boolean) as string[];
 
-    const candidateColumns = [
-      'nombre_estudiante',
-      'Nombre del estudiante',
-      'Nombres y Apellidos del Estudiante',
-      'nombres_y_apellidos',
-      'nombre_completo',
-      'nombre',
-      'Nombre'
-    ];
+    let deletedAtLeastOnce = false;
+    let rlsError: any = null;
 
     for (const tbl of targetTables) {
-      // 1. Borrar por raw_db_id
-      if (estudiante.raw_db_id) {
+      const columnas = await obtenerColumnasTabla(tbl);
+
+      // 1. Borrar por raw_db_id si la columna 'id' existe
+      const idCol = columnas.find((c) => cleanKey(c) === 'id');
+      if (idCol && estudiante.raw_db_id) {
         try {
-          await supabase.from(tbl).delete().eq('id', estudiante.raw_db_id);
+          const res = await supabase.from(tbl).delete().eq(idCol, estudiante.raw_db_id);
+          if (!res.error) deletedAtLeastOnce = true;
+          else if (res.error.code === '42501') rlsError = res.error;
         } catch {}
       }
 
-      // 2. Borrar por id
-      if (estudiante.id && !estudiante.id.startsWith('gid_')) {
-        try {
-          await supabase.from(tbl).delete().eq('id', estudiante.id);
-        } catch {}
-      }
+      // 2. Borrar por columnas de nombre
+      const nameColumns = columnas.filter((c) => {
+        const k = cleanKey(c);
+        return (
+          k.includes('nombre') ||
+          k.includes('estudiante') ||
+          k.includes('alumno')
+        );
+      });
 
-      // 3. Borrar por variantes de nombre
-      for (const col of candidateColumns) {
+      const colsToTry = nameColumns.length > 0 ? nameColumns : ['nombre_estudiante', 'Nombre del estudiante', 'nombre'];
+
+      for (const col of colsToTry) {
         for (const nameVal of nameVariants) {
           try {
-            await supabase.from(tbl).delete().eq(col, nameVal);
+            const res = await supabase.from(tbl).delete().ilike(col, nameVal);
+            if (!res.error) deletedAtLeastOnce = true;
+            else if (res.error.code === '42501') rlsError = res.error;
           } catch {}
         }
       }
     }
 
-    // 4. Limpiar eventos de ayuda asociados
+    // También borrar entregas_ayudas registradas para este estudiante
     try {
       await supabase.from(EVENTS_TABLE_NAME).delete().eq('estudiante_id', estudiante.id);
+      await supabase.from(EVENTS_TABLE_NAME).delete().ilike('nombre_estudiante', estudiante.nombre_estudiante);
     } catch {}
 
-    return { success: true, error: null };
-  } catch (err) {
-    console.warn('Aviso eliminando estudiante de Supabase:', err);
-    return { success: true, error: err };
+    if (rlsError && !deletedAtLeastOnce) {
+      return {
+        success: false,
+        error: rlsError,
+        message: 'Aviso: La eliminación en Supabase fue bloqueada por políticas RLS. El estudiante fue eliminado localmente.'
+      };
+    }
+
+    return { success: true, error: null, message: 'Estudiante eliminado exitosamente' };
+  } catch (err: any) {
+    console.warn('Error borrando en Supabase:', err);
+    return { success: false, error: err, message: err?.message };
   }
 }
 
 /**
- * Determina automáticamente el color del semáforo de urgencia basado en las respuestas de la encuesta
+ * Alias exportado para calcular el nivel de urgencia diagnóstica
  */
-export function calcularNivelUrgencia(estudiante: Partial<EstudianteReporte>): NivelUrgencia {
-  const tieneDatos = Boolean(
-    estudiante.nombre_estudiante &&
-    (estudiante.condicion_vivienda || estudiante.leciones_fisicas || estudiante.salud_emocional || estudiante.ayuda_prioritaria)
-  );
+export function calcularNivelUrgencia(data: {
+  leciones_fisicas?: string;
+  salud_emocional?: string;
+  condicion_vivienda?: string;
+  ayuda_prioritaria?: string;
+}): NivelUrgencia {
+  return calcularUrgenciaAutomatica(data);
+}
 
-  if (!tieneDatos) return 'gris';
-
-  const fisica = (estudiante.leciones_fisicas || '').toLowerCase();
-  const emocional = (estudiante.salud_emocional || '').toLowerCase();
-  const vivienda = (estudiante.condicion_vivienda || '').toLowerCase();
-  const ayuda = (estudiante.ayuda_prioritaria || '').toLowerCase();
+/**
+ * Calcula el nivel de urgencia diagnóstica automáticamente
+ */
+function calcularUrgenciaAutomatica(data: {
+  leciones_fisicas?: string;
+  salud_emocional?: string;
+  condicion_vivienda?: string;
+  ayuda_prioritaria?: string;
+}): NivelUrgencia {
+  const fisica = (data.leciones_fisicas || '').toLowerCase();
+  const emocional = (data.salud_emocional || '').toLowerCase();
+  const vivienda = (data.condicion_vivienda || '').toLowerCase();
+  const ayuda = (data.ayuda_prioritaria || '').toLowerCase();
 
   const esRojo =
     fisica.includes('fractura') ||

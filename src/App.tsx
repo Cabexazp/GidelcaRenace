@@ -24,6 +24,7 @@ import {
   eliminarEstudianteEnSupabase,
   registrarEventoAyudaEnSupabase,
   eliminarEventoAyudaEnSupabase,
+  guardarEstudiantesLocalesEnCache,
   DEFAULT_TABLE_NAME
 } from './lib/supabase';
 import {
@@ -263,9 +264,11 @@ export default function App() {
         grado: data.grado || studentToEdit.grado
       } as EstudianteReporte;
 
-      setEstudiantes((prev) =>
-        prev.map((e) => (e.id === updatedStudent.id ? updatedStudent : e))
-      );
+      setEstudiantes((prev) => {
+        const next = prev.map((e) => (e.id === updatedStudent.id ? updatedStudent : e));
+        guardarEstudiantesLocalesEnCache(next);
+        return next;
+      });
       showNotification(`Estudiante "${updatedStudent.nombre_estudiante}" actualizado.`);
     } else {
       // Creación
@@ -295,7 +298,11 @@ export default function App() {
         historial_ayudas: []
       };
 
-      setEstudiantes((prev) => [updatedStudent, ...prev]);
+      setEstudiantes((prev) => {
+        const next = [updatedStudent, ...prev];
+        guardarEstudiantesLocalesEnCache(next);
+        return next;
+      });
       showNotification(`Estudiante "${updatedStudent.nombre_estudiante}" agregado al censo.`);
     }
 
@@ -304,10 +311,13 @@ export default function App() {
       const syncRes = await guardarEstudianteEnSupabase(updatedStudent, tableName);
       if (syncRes.success) {
         setSupabaseConnected(true);
-        console.log('Estudiante guardado en Supabase exitosamente');
+        showNotification(`✅ Sincronizado en Supabase: ${updatedStudent.nombre_estudiante}`);
+      } else if (syncRes.message) {
+        showNotification(`⚠️ Guardado localmente. Supabase: ${syncRes.message}`);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('No se pudo sincronizar en Supabase:', e);
+      showNotification(`⚠️ Guardado localmente (Error Supabase: ${e?.message || e})`);
     }
   };
 
@@ -318,20 +328,27 @@ export default function App() {
       return;
     }
 
-    // 1. Quitar del estado local inmediatamente
-    setEstudiantes((prev) => prev.filter((e) => e.id !== estudiante.id));
+    // 1. Quitar del estado local inmediatamente y guardar en caché
+    setEstudiantes((prev) => {
+      const next = prev.filter((e) => e.id !== estudiante.id);
+      guardarEstudiantesLocalesEnCache(next);
+      return next;
+    });
 
     // 2. Si estaba abierto en el modal de detalle, cerrarlo
     if (selectedStudentForDetail && selectedStudentForDetail.id === estudiante.id) {
       setSelectedStudentForDetail(null);
     }
 
-    showNotification(`Estudiante "${estudiante.nombre_estudiante}" eliminado del censo.`);
+    showNotification(`🗑️ Estudiante "${estudiante.nombre_estudiante}" eliminado del censo.`);
 
     // 3. Ejecutar eliminación en Supabase y lista negra
     try {
-      await eliminarEstudianteEnSupabase(estudiante, tableName);
-    } catch (e) {
+      const delRes = await eliminarEstudianteEnSupabase(estudiante, tableName);
+      if (!delRes.success && delRes.message) {
+        showNotification(delRes.message);
+      }
+    } catch (e: any) {
       console.warn('Error eliminando en Supabase:', e);
     }
   };

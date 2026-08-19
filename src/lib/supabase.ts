@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { EstudianteReporte, NivelUrgencia, TipoAyuda, HistorialAyuda, AyudasContador } from '../types';
 import { repararTextoEspecial, limpiarTelefono } from './textCleaner';
+import { mapearOpcionATipoAyuda } from './surveyOptions';
 
 const CUSTOM_URL_STORAGE_KEY = 'gidelca_custom_supabase_url';
 const CUSTOM_KEY_STORAGE_KEY = 'gidelca_custom_supabase_key';
@@ -110,6 +111,41 @@ export function obtenerEstudiantesLocalesEnCache(): EstudianteReporte[] {
     return saved ? JSON.parse(saved) : [];
   } catch {
     return [];
+  }
+}
+
+const LOCAL_AID_EVENTS_KEY = 'gidelca_renace_local_aid_events_v1';
+
+export function obtenerEventosAyudaLocales(): any[] {
+  try {
+    const saved = localStorage.getItem(LOCAL_AID_EVENTS_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function guardarEventoAyudaLocalmente(evento: any) {
+  try {
+    const list = obtenerEventosAyudaLocales();
+    const existingIndex = list.findIndex((e) => e.id === evento.id);
+    if (existingIndex >= 0) {
+      list[existingIndex] = evento;
+    } else {
+      list.push(evento);
+    }
+    localStorage.setItem(LOCAL_AID_EVENTS_KEY, JSON.stringify(list));
+  } catch (e) {
+    console.warn('Error guardando evento local:', e);
+  }
+}
+
+export function eliminarEventoAyudaLocalmente(eventoId: string) {
+  try {
+    const list = obtenerEventosAyudaLocales().filter((e) => e.id !== eventoId);
+    localStorage.setItem(LOCAL_AID_EVENTS_KEY, JSON.stringify(list));
+  } catch (e) {
+    console.warn('Error eliminando evento local:', e);
   }
 }
 
@@ -597,28 +633,59 @@ export async function cargarTodosLosEstudiantesSupabase(tableName = DEFAULT_TABL
         return !isDeleted;
       });
 
-    // Cargar los eventos / entregas registradas en línea desde EVENTS_TABLE_NAME
+    // Cargar y unificar los eventos / entregas registradas en línea y en caché local
     try {
-      const { data: eventos, error: eventosError } = await supabase
-        .from(EVENTS_TABLE_NAME)
-        .select('*')
-        .order('created_at', { ascending: false });
+      const eventosCombinados: any[] = [];
+      const idEventosVistos = new Set<string>();
 
-      if (!eventosError && Array.isArray(eventos) && eventos.length > 0) {
+      // 1. Cargar desde Supabase
+      try {
+        const { data: eventosRemotos, error: eventosError } = await supabase
+          .from(EVENTS_TABLE_NAME)
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!eventosError && Array.isArray(eventosRemotos)) {
+          eventosRemotos.forEach((ev) => {
+            if (ev && ev.id && !idEventosVistos.has(String(ev.id))) {
+              idEventosVistos.add(String(ev.id));
+              eventosCombinados.push(ev);
+            }
+          });
+        }
+      } catch (remErr) {
+        console.warn('Aviso leyendo tabla remota entregas_ayudas:', remErr);
+      }
+
+      // 2. Cargar eventos locales
+      const eventosLocales = obtenerEventosAyudaLocales();
+      eventosLocales.forEach((ev) => {
+        if (ev && ev.id && !idEventosVistos.has(String(ev.id))) {
+          idEventosVistos.add(String(ev.id));
+          eventosCombinados.push(ev);
+        }
+      });
+
+      if (eventosCombinados.length > 0) {
         const studentMap = new Map<string, EstudianteReporte>();
         estudiantes.forEach((e) => {
-          const keyNameGrade = `${cleanKey(e.nombre_estudiante)}_${cleanKey(e.grado)}`;
           studentMap.set(e.id, e);
-          studentMap.set(keyNameGrade, e);
+          studentMap.set(cleanKey(e.nombre_estudiante), e);
+          if (e.raw_db_id) studentMap.set(String(e.raw_db_id), e);
+          if (e.raw_nombre_original) studentMap.set(cleanKey(e.raw_nombre_original), e);
+          studentMap.set(`${cleanKey(e.nombre_estudiante)}_${cleanKey(e.grado)}`, e);
         });
 
-        eventos.forEach((ev: any) => {
+        eventosCombinados.forEach((ev: any) => {
           const target =
             studentMap.get(ev.estudiante_id) ||
+            studentMap.get(cleanKey(ev.nombre_estudiante || '')) ||
             studentMap.get(`${cleanKey(ev.nombre_estudiante || '')}_${cleanKey(ev.grado || '')}`);
 
           if (target) {
-            const tipo = (ev.tipo_ayuda || 'Alimento') as TipoAyuda;
+            // Mapear y normalizar a 'Alimento' | 'Medicamento' | 'Ropa' | 'Emocional' | 'Construccion'
+            const rawTipo = String(ev.tipo_ayuda || 'Alimento');
+            const tipo: TipoAyuda = (mapearOpcionATipoAyuda(rawTipo) || rawTipo) as TipoAyuda;
             const cant = Number(ev.cantidad) || 1;
 
             if (!target.ayudas_entregadas) {
@@ -644,12 +711,15 @@ export async function cargarTodosLosEstudiantesSupabase(tableName = DEFAULT_TABL
             if (!target.historial_ayudas) {
               target.historial_ayudas = [];
             }
-            target.historial_ayudas.push(histItem);
+            // Evitar duplicados en historial
+            if (!target.historial_ayudas.some((h) => h.id === histItem.id)) {
+              target.historial_ayudas.push(histItem);
+            }
           }
         });
       }
     } catch (e) {
-      console.warn('Aviso cargando eventos de entregas_ayudas:', e);
+      console.warn('Aviso procesando eventos de entregas de ayudas:', e);
     }
 
     return { data: estudiantes, error: null };
@@ -659,7 +729,7 @@ export async function cargarTodosLosEstudiantesSupabase(tableName = DEFAULT_TABL
 }
 
 /**
- * Registra un evento de entrega en la tabla online adicional (entregas_ayudas)
+ * Registra un evento de entrega en la tabla online adicional (entregas_ayudas) y en caché
  */
 export async function registrarEventoAyudaEnSupabase(
   estudiante: EstudianteReporte,
@@ -669,40 +739,49 @@ export async function registrarEventoAyudaEnSupabase(
   responsable: string,
   observaciones: string
 ): Promise<{ success: boolean; id: string; error: any }> {
-  try {
-    const eventId = `ayuda_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const payload = {
-      id: eventId,
-      estudiante_id: estudiante.id,
-      nombre_estudiante: estudiante.nombre_estudiante,
-      grado: estudiante.grado,
-      tipo_ayuda: tipo,
-      cantidad,
-      fecha: fecha || new Date().toISOString().split('T')[0],
-      responsable: responsable || 'Comité Gidelca',
-      observaciones: observaciones || ''
-    };
+  const tipoNormalizado = (mapearOpcionATipoAyuda(tipo) || tipo) as TipoAyuda;
+  const eventId = `ayuda_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const payload = {
+    id: eventId,
+    estudiante_id: estudiante.id,
+    nombre_estudiante: estudiante.nombre_estudiante,
+    grado: estudiante.grado,
+    tipo_ayuda: tipoNormalizado,
+    cantidad,
+    fecha: fecha || new Date().toISOString().split('T')[0],
+    responsable: responsable || 'Comité Gidelca',
+    observaciones: observaciones || ''
+  };
 
+  // 1. Guardar siempre de forma inmediata en la caché local
+  guardarEventoAyudaLocalmente(payload);
+
+  // 2. Sincronizar en Supabase
+  try {
     const { error } = await supabase.from(EVENTS_TABLE_NAME).insert([payload]);
 
     if (error) {
-      console.warn('Error guardando evento en entregas_ayudas:', error.message);
+      console.warn('Aviso guardando evento en tabla entregas_ayudas de Supabase:', error.message);
       return { success: false, id: eventId, error };
     }
 
     return { success: true, id: eventId, error: null };
   } catch (err) {
-    console.warn('Fallo guardando evento en Supabase:', err);
-    return { success: false, id: '', error: err };
+    console.warn('Fallo de red guardando evento en Supabase:', err);
+    return { success: false, id: eventId, error: err };
   }
 }
 
 /**
- * Elimina un evento de entrega de ayuda en Supabase para deshacer o corregir un error
+ * Elimina un evento de entrega de ayuda en Supabase y en la caché local
  */
 export async function eliminarEventoAyudaEnSupabase(
   eventoId: string
 ): Promise<{ success: boolean; error: any }> {
+  // 1. Eliminar de la caché local inmediatamente
+  eliminarEventoAyudaLocalmente(eventoId);
+
+  // 2. Eliminar de Supabase
   try {
     const { error } = await supabase
       .from(EVENTS_TABLE_NAME)
@@ -710,7 +789,7 @@ export async function eliminarEventoAyudaEnSupabase(
       .eq('id', eventoId);
 
     if (error) {
-      console.warn('Error eliminando evento en entregas_ayudas:', error.message);
+      console.warn('Aviso eliminando evento en entregas_ayudas:', error.message);
       return { success: false, error };
     }
 

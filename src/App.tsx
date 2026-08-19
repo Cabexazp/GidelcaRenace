@@ -174,6 +174,7 @@ export default function App() {
 
       if (result.data && result.data.length > 0) {
         setEstudiantes(result.data);
+        guardarEstudiantesLocalesEnCache(result.data);
         setSupabaseConnected(true);
         setSupabaseLiveCount(result.data.length);
         showNotification(`🟢 ${result.data.length} estudiantes sincronizados desde tabla ${targetTable}`);
@@ -361,7 +362,7 @@ export default function App() {
   };
 
   // Confirmar entrega de ayuda
-  const handleConfirmAidDelivery = (
+  const handleConfirmAidDelivery = async (
     estudianteId: string,
     tipo: TipoAyuda,
     cantidad: number,
@@ -369,62 +370,67 @@ export default function App() {
     responsable: string,
     observaciones: string
   ) => {
-    let studentToSync: EstudianteReporte | null = null;
+    // 1. Encontrar al estudiante actual de manera síncrona
+    const currentStudent = estudiantes.find((e) => e.id === estudianteId);
+    if (!currentStudent) {
+      showNotification('Error: Estudiante no encontrado.');
+      return;
+    }
 
+    const currentCounts = currentStudent.ayudas_entregadas || {
+      Alimento: 0,
+      Medicamento: 0,
+      Ropa: 0,
+      Emocional: 0,
+      Construccion: 0
+    };
+
+    const updatedCounts = {
+      ...currentCounts,
+      [tipo]: (currentCounts[tipo] || 0) + cantidad
+    };
+
+    const nuevoHistorialItem = {
+      id: `ayuda_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      tipo,
+      fecha: fecha || new Date().toISOString().split('T')[0],
+      responsable: responsable || 'Comité Gidelca',
+      observaciones: observaciones || `Entrega de ayuda: ${tipo}`,
+      cantidad
+    };
+
+    const updatedStudent: EstudianteReporte = {
+      ...currentStudent,
+      ayudas_entregadas: updatedCounts,
+      historial_ayudas: [nuevoHistorialItem, ...(currentStudent.historial_ayudas || [])]
+    };
+
+    // 2. Actualizar estado y caché local inmediatamente
     setEstudiantes((prev) => {
-      return prev.map((est) => {
-        if (est.id !== estudianteId) return est;
-
-        const currentCounts = est.ayudas_entregadas || {
-          Alimento: 0,
-          Medicamento: 0,
-          Ropa: 0,
-          Emocional: 0,
-          Construccion: 0
-        };
-
-        const updatedCounts = {
-          ...currentCounts,
-          [tipo]: (currentCounts[tipo] || 0) + cantidad
-        };
-
-        const nuevoHistorialItem = {
-          id: `ayuda_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          tipo,
-          fecha,
-          responsable,
-          observaciones,
-          cantidad
-        };
-
-        const updatedStudent: EstudianteReporte = {
-          ...est,
-          ayudas_entregadas: updatedCounts,
-          historial_ayudas: [nuevoHistorialItem, ...(est.historial_ayudas || [])]
-        };
-
-        studentToSync = updatedStudent;
-
-        if (selectedStudentForDetail && selectedStudentForDetail.id === estudianteId) {
-          setSelectedStudentForDetail(updatedStudent);
-        }
-
-        return updatedStudent;
-      });
+      const next = prev.map((est) => (est.id === estudianteId ? updatedStudent : est));
+      guardarEstudiantesLocalesEnCache(next);
+      return next;
     });
 
-    if (studentToSync) {
-      registrarEventoAyudaEnSupabase(
-        studentToSync,
+    if (selectedStudentForDetail && selectedStudentForDetail.id === estudianteId) {
+      setSelectedStudentForDetail(updatedStudent);
+    }
+
+    showNotification(`¡Ayuda de ${tipo} (+${cantidad}) registrada correctamente!`);
+
+    // 3. Sincronizar en Supabase (tabla entregas_ayudas y caché)
+    try {
+      await registrarEventoAyudaEnSupabase(
+        updatedStudent,
         tipo,
         cantidad,
         fecha,
         responsable,
         observaciones
       );
+    } catch (e: any) {
+      console.warn('Aviso sincronizando entrega de ayuda en Supabase:', e);
     }
-
-    showNotification(`¡Ayuda de ${tipo} (+${cantidad}) registrada y sincronizada!`);
   };
 
   // Anular o quitar una ayuda si hubo equivocación
@@ -439,40 +445,41 @@ export default function App() {
       return;
     }
 
+    const currentStudent = estudiantes.find((e) => e.id === estudianteId);
+    if (!currentStudent) return;
+
+    const currentCounts = currentStudent.ayudas_entregadas || {
+      Alimento: 0,
+      Medicamento: 0,
+      Ropa: 0,
+      Emocional: 0,
+      Construccion: 0
+    };
+
+    const updatedCounts = {
+      ...currentCounts,
+      [tipo]: Math.max(0, (currentCounts[tipo] || 0) - cantidad)
+    };
+
+    const nuevoHistorial = (currentStudent.historial_ayudas || []).filter(
+      (h) => h.id !== itemHistorialId
+    );
+
+    const updatedStudent: EstudianteReporte = {
+      ...currentStudent,
+      ayudas_entregadas: updatedCounts,
+      historial_ayudas: nuevoHistorial
+    };
+
     setEstudiantes((prev) => {
-      return prev.map((est) => {
-        if (est.id !== estudianteId) return est;
-
-        const currentCounts = est.ayudas_entregadas || {
-          Alimento: 0,
-          Medicamento: 0,
-          Ropa: 0,
-          Emocional: 0,
-          Construccion: 0
-        };
-
-        const updatedCounts = {
-          ...currentCounts,
-          [tipo]: Math.max(0, (currentCounts[tipo] || 0) - cantidad)
-        };
-
-        const nuevoHistorial = (est.historial_ayudas || []).filter(
-          (h) => h.id !== itemHistorialId
-        );
-
-        const updatedStudent: EstudianteReporte = {
-          ...est,
-          ayudas_entregadas: updatedCounts,
-          historial_ayudas: nuevoHistorial
-        };
-
-        if (selectedStudentForDetail && selectedStudentForDetail.id === estudianteId) {
-          setSelectedStudentForDetail(updatedStudent);
-        }
-
-        return updatedStudent;
-      });
+      const next = prev.map((est) => (est.id === estudianteId ? updatedStudent : est));
+      guardarEstudiantesLocalesEnCache(next);
+      return next;
     });
+
+    if (selectedStudentForDetail && selectedStudentForDetail.id === estudianteId) {
+      setSelectedStudentForDetail(updatedStudent);
+    }
 
     try {
       await eliminarEventoAyudaEnSupabase(itemHistorialId);

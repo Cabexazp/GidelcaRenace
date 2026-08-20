@@ -20,7 +20,8 @@ import {
   Key,
   ShieldCheck,
   Layers,
-  HelpCircle
+  HelpCircle,
+  Trash2
 } from 'lucide-react';
 import {
   supabase,
@@ -31,6 +32,7 @@ import {
   cargarTodosLosEstudiantesSupabase,
   guardarEstudianteEnSupabase,
   eliminarEstudianteEnSupabase,
+  depurarDuplicadosSupabase,
   parsearCSVGoogleForms,
   actualizarCredencialesSupabase,
   getSupabaseUrl,
@@ -216,6 +218,41 @@ export const SupabaseSyncModal: React.FC<SupabaseSyncModalProps> = ({
     } catch (err: any) {
       setStatusType('error');
       setStatusMessage(`Error inesperado: ${err?.message || err}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeduplicate = async () => {
+    if (
+      !window.confirm(
+        `¿Deseas buscar y eliminar los registros duplicados con el mismo nombre en la tabla "${currentTable}" de Supabase? Se mantendrá 1 registro único por estudiante.`
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    setStatusMessage(`Buscando y depurando registros duplicados en la tabla "${currentTable}"...`);
+    setStatusType('info');
+
+    try {
+      const res = await depurarDuplicadosSupabase(currentTable);
+      if (res.success) {
+        setStatusType('success');
+        setStatusMessage(res.message);
+        // Recargar datos actualizados
+        const { data } = await cargarTodosLosEstudiantesSupabase(currentTable);
+        if (data && data.length > 0) {
+          onUpdateEstudiantesFromSupabase(data);
+        }
+      } else {
+        setStatusType('error');
+        setStatusMessage(res.message);
+      }
+    } catch (err: any) {
+      setStatusType('error');
+      setStatusMessage(`Error depurando duplicados: ${err?.message || err}`);
     } finally {
       setLoading(false);
     }
@@ -476,6 +513,27 @@ VITE_SUPABASE_ANON_KEY=${customKey}`;
                   <span>Seleccionar Archivo CSV de Google Forms</span>
                 </button>
               </div>
+
+              {/* Sección 4: Depurar Duplicados */}
+              <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-black text-rose-950 text-sm flex items-center gap-2">
+                    <Trash2 className="w-4 h-4 text-rose-700" />
+                    <span>Depurar y Eliminar Registros con Nombres Duplicados</span>
+                  </h3>
+                </div>
+                <p className="text-slate-600 font-medium text-xs">
+                  Si un estudiante diligenció la encuesta más de una vez en Google Forms o Supabase, este botón conserva 1 solo registro único y elimina todas las filas duplicadas directamente en Supabase.
+                </p>
+                <button
+                  onClick={handleDeduplicate}
+                  disabled={loading}
+                  className="w-full py-2.5 bg-rose-700 hover:bg-rose-800 text-white font-black rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 active:scale-98"
+                >
+                  <Trash2 className="w-4 h-4 text-white" />
+                  <span>Eliminar Duplicados en Supabase Ahora</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -593,7 +651,15 @@ VITE_SUPABASE_ANON_KEY=${customKey}`;
                 </pre>
               </div>
 
-              <div className="flex justify-end">
+              <div className="flex flex-wrap justify-end gap-2">
+                <button
+                  onClick={handleDeduplicate}
+                  disabled={loading}
+                  className="px-4 py-2.5 bg-rose-700 hover:bg-rose-800 text-white font-black rounded-xl flex items-center gap-2 cursor-pointer shadow-md disabled:opacity-50 transition-all"
+                >
+                  <Trash2 className="w-4 h-4 text-white" />
+                  <span>Depurar Duplicados en Supabase</span>
+                </button>
                 <button
                   onClick={handleTestWriteAndDelete}
                   disabled={loading}

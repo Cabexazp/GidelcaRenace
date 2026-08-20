@@ -531,6 +531,47 @@ ALTER TABLE public.entregas_ayudas ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Permitir todo a usuarios anon en entregas_ayudas" ON public.entregas_ayudas;
 CREATE POLICY "Permitir todo a usuarios anon en entregas_ayudas" ON public.entregas_ayudas
 FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+-- 3. AGREGAR LLAVE PRIMARIA (ID ÚNICO FIJO) A UNA TABLA EXISTENTE:
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+ALTER TABLE public."Encuesta" ADD COLUMN IF NOT EXISTS id UUID DEFAULT gen_random_uuid();
+UPDATE public."Encuesta" SET id = gen_random_uuid() WHERE id IS NULL;
+ALTER TABLE public."Encuesta" ALTER COLUMN id SET NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'public."Encuesta"'::regclass AND contype = 'p'
+  ) THEN
+    ALTER TABLE public."Encuesta" ADD PRIMARY KEY (id);
+  END IF;
+END $$;
+
+-- 4. CÓDIGO SQL PARA ELIMINAR REGISTROS DUPLICADOS POR NOMBRE EN SUPABASE:
+-- (Conserva 1 solo registro por estudiante y borra las copias repetidas)
+DELETE FROM public."Encuesta" a
+USING public."Encuesta" b
+WHERE a.ctid < b.ctid
+  AND LOWER(TRIM(a.nombre_estudiante)) = LOWER(TRIM(b.nombre_estudiante))
+  AND a.nombre_estudiante IS NOT NULL
+  AND TRIM(a.nombre_estudiante) <> '';
+
+-- 5. HABILITAR TIEMPO REAL (REALTIME) PARA ACTUALIZACIÓN EN VIVO MULTIUSUARIO:
+ALTER TABLE public."Encuesta" REPLICA IDENTITY FULL;
+ALTER TABLE public.entregas_ayudas REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    BEGIN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public."Encuesta";
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+    BEGIN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.entregas_ayudas;
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+  END IF;
+END $$;
 `;
 
 /**
@@ -617,21 +658,10 @@ export async function cargarTodosLosEstudiantesSupabase(tableName = DEFAULT_TABL
       }
     }
 
-    const eliminados = obtenerEstudiantesEliminados();
-
-    const estudiantes: EstudianteReporte[] = allRows
-      .map((row, idx) => normalizarEstudianteDesdeSupabase(row, idx))
-      .filter((e) => {
-        const keyClean = cleanKey(e.nombre_estudiante);
-        const originalClean = e.raw_nombre_original ? cleanKey(e.raw_nombre_original) : '';
-        const isDeleted =
-          eliminados.includes(e.id) ||
-          eliminados.includes(keyClean) ||
-          (originalClean && eliminados.includes(originalClean)) ||
-          (e.raw_db_id && eliminados.includes(String(e.raw_db_id)));
-
-        return !isDeleted;
-      });
+    // Mapear los registros reales traídos directamente de Supabase
+    const estudiantes: EstudianteReporte[] = allRows.map((row, idx) =>
+      normalizarEstudianteDesdeSupabase(row, idx)
+    );
 
     // Cargar y unificar los eventos / entregas registradas en línea y en caché local
     try {
@@ -1109,4 +1139,143 @@ function calcularUrgenciaAutomatica(data: {
   if (esVerde) return 'verde';
 
   return 'naranja';
+}
+
+/**
+ * Detecta y elimina automáticamente registros duplicados por nombre en Supabase
+ */
+export async function depurarDuplicadosSupabase(
+  tableName: string = DEFAULT_TABLE_NAME
+): Promise<{ success: boolean; eliminadosCount: number; message: string }> {
+  try {
+    const { data, error } = await supabase.from(tableName).select('*');
+    if (error || !data || data.length === 0) {
+      return {
+        success: false,
+        eliminadosCount: 0,
+        message: error ? error.message : 'No se encontraron registros para depurar.'
+      };
+    }
+
+    // Identificar la clave de nombre
+    const sample = data[0];
+    const nameCol =
+      Object.keys(sample).find((k) => {
+        const c = cleanKey(k);
+        return c.includes('nombre') || c.includes('estudiante') || c.includes('alumno');
+      }) || 'nombre_estudiante';
+
+    // Agrupar por nombre normalizado
+    const grupos = new Map<string, any[]>();
+    data.forEach((row) => {
+      const rawName = String(row[nameCol] || '').trim();
+      const normKey = cleanKey(rawName);
+      if (!normKey) return;
+
+      if (!grupos.has(normKey)) {
+        grupos.set(normKey, []);
+      }
+      grupos.get(normKey)!.push(row);
+    });
+
+    const idsParaEliminar: any[] = [];
+
+    grupos.forEach((filas) => {
+      if (filas.length > 1) {
+        // Conservar el primer elemento y marcar los demás para eliminación
+        const duplicados = filas.slice(1);
+        duplicados.forEach((dup) => {
+          if (dup.id !== undefined && dup.id !== null) {
+            idsParaEliminar.push(dup.id);
+          }
+        });
+      }
+    });
+
+    if (idsParaEliminar.length === 0) {
+      return {
+        success: true,
+        eliminadosCount: 0,
+        message: '¡Excelente! No se encontraron registros con nombres duplicados.'
+      };
+    }
+
+    // Ejecutar eliminación en lotes por ID
+    let eliminadosTotal = 0;
+    const CHUNK_SIZE = 40;
+    for (let i = 0; i < idsParaEliminar.length; i += CHUNK_SIZE) {
+      const chunk = idsParaEliminar.slice(i, i + CHUNK_SIZE);
+      const { error: delErr } = await supabase
+        .from(tableName)
+        .delete()
+        .in('id', chunk);
+
+      if (!delErr) {
+        eliminadosTotal += chunk.length;
+      } else {
+        console.warn('Aviso eliminando lote de duplicados:', delErr.message);
+      }
+    }
+
+    return {
+      success: true,
+      eliminadosCount: eliminadosTotal,
+      message: `Se eliminaron ${eliminadosTotal} registros duplicados de la tabla "${tableName}" con éxito.`
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      eliminadosCount: 0,
+      message: `Error al depurar duplicados: ${err?.message || err}`
+    };
+  }
+}
+
+/**
+ * Se suscribe a los cambios en tiempo real de Supabase (INSERT, UPDATE, DELETE)
+ * para sincronizar a todos los docentes conectados de manera instantánea
+ */
+export function suscribirCambiosEnVivo(
+  tableName: string,
+  onLiveChange: (payload: { eventType: string; table: string; new?: any; old?: any }) => void
+): () => void {
+  const channelId = `live-sync-${Math.random().toString(36).substring(2, 8)}`;
+  const tables = Array.from(
+    new Set([
+      tableName,
+      tableName === 'Encuesta' ? 'encuesta' : 'Encuesta',
+      EVENTS_TABLE_NAME
+    ])
+  );
+
+  let channel = supabase.channel(channelId);
+
+  tables.forEach((tbl) => {
+    channel = channel.on(
+      'postgres_changes' as any,
+      {
+        event: '*',
+        schema: 'public',
+        table: tbl
+      },
+      (payload: any) => {
+        onLiveChange({
+          eventType: payload.eventType,
+          table: tbl,
+          new: payload.new,
+          old: payload.old
+        });
+      }
+    );
+  });
+
+  channel.subscribe();
+
+  return () => {
+    try {
+      supabase.removeChannel(channel);
+    } catch (e) {
+      console.warn('Aviso cancelando canal realtime:', e);
+    }
+  };
 }

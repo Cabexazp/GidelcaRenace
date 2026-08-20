@@ -25,6 +25,7 @@ import {
   registrarEventoAyudaEnSupabase,
   eliminarEventoAyudaEnSupabase,
   guardarEstudiantesLocalesEnCache,
+  suscribirCambiosEnVivo,
   DEFAULT_TABLE_NAME
 } from './lib/supabase';
 import {
@@ -151,49 +152,90 @@ export default function App() {
     showNotification('Sesión cerrada. Seleccione un perfil para ingresar.');
   };
 
-  // Cargar automáticamente datos reales desde Supabase al iniciar
-  const fetchRealDataFromSupabase = useCallback(async (targetTable = tableName) => {
-    setIsSupabaseSyncing(true);
-    try {
-      let result = await cargarTodosLosEstudiantesSupabase(targetTable);
+  // Cargar automáticamente datos reales desde Supabase al iniciar o en vivo
+  const fetchRealDataFromSupabase = useCallback(
+    async (targetTable = tableName, silent = false) => {
+      if (!silent) setIsSupabaseSyncing(true);
+      try {
+        let result = await cargarTodosLosEstudiantesSupabase(targetTable);
 
-      // Si no devolvió nada en la tabla por defecto, probar alternativas comunes
-      if ((result.error || result.data.length === 0) && targetTable === DEFAULT_TABLE_NAME) {
-        const fallbackTables = ['encuesta', 'estudiantes', 'censo', 'censo_estudiantil'];
-        for (const altTable of fallbackTables) {
-          const altResult = await cargarTodosLosEstudiantesSupabase(altTable);
-          if (!altResult.error && altResult.data.length > 0) {
-            result = altResult;
-            targetTable = altTable;
-            setTableName(altTable);
-            localStorage.setItem(TABLE_STORAGE_KEY, altTable);
-            break;
+        // Si no devolvió nada en la tabla por defecto, probar alternativas comunes
+        if ((result.error || result.data.length === 0) && targetTable === DEFAULT_TABLE_NAME) {
+          const fallbackTables = ['encuesta', 'estudiantes', 'censo', 'censo_estudiantil'];
+          for (const altTable of fallbackTables) {
+            const altResult = await cargarTodosLosEstudiantesSupabase(altTable);
+            if (!altResult.error && altResult.data.length > 0) {
+              result = altResult;
+              targetTable = altTable;
+              setTableName(altTable);
+              localStorage.setItem(TABLE_STORAGE_KEY, altTable);
+              break;
+            }
           }
         }
-      }
 
-      if (result.data && result.data.length > 0) {
-        setEstudiantes(result.data);
-        guardarEstudiantesLocalesEnCache(result.data);
-        setSupabaseConnected(true);
-        setSupabaseLiveCount(result.data.length);
-        showNotification(`🟢 ${result.data.length} estudiantes sincronizados desde tabla ${targetTable}`);
-      } else if (result.error) {
-        console.warn('Supabase fetch notice:', result.error.message || result.error);
+        if (result.data && result.data.length > 0) {
+          setEstudiantes(result.data);
+          guardarEstudiantesLocalesEnCache(result.data);
+          setSupabaseConnected(true);
+          setSupabaseLiveCount(result.data.length);
+          if (!silent) {
+            showNotification(`🟢 ${result.data.length} estudiantes sincronizados desde tabla ${targetTable}`);
+          }
+        } else if (result.error) {
+          console.warn('Supabase fetch notice:', result.error.message || result.error);
+          setSupabaseConnected(false);
+        }
+      } catch (err) {
+        console.warn('Error conectando a Supabase:', err);
         setSupabaseConnected(false);
+      } finally {
+        if (!silent) setIsSupabaseSyncing(false);
       }
-    } catch (err) {
-      console.warn('Error conectando a Supabase:', err);
-      setSupabaseConnected(false);
-    } finally {
-      setIsSupabaseSyncing(false);
-    }
-  }, [tableName]);
+    },
+    [tableName]
+  );
 
-  // Ejecutar carga en mount
+  // 1. Carga inicial
   useEffect(() => {
-    fetchRealDataFromSupabase();
-  }, [fetchRealDataFromSupabase]);
+    fetchRealDataFromSupabase(tableName, false);
+  }, [fetchRealDataFromSupabase, tableName]);
+
+  // 2. Sincronización en tiempo real (Supabase Realtime) + Polling automático multiusuario
+  useEffect(() => {
+    // A) Suscripción en vivo por WebSockets a cambios en Supabase (INSERT, UPDATE, DELETE)
+    const desuscribirRealtime = suscribirCambiosEnVivo(tableName, (payload) => {
+      fetchRealDataFromSupabase(tableName, true);
+      if (payload.eventType === 'INSERT') {
+        showNotification('⚡ [En Vivo] Se agregó un nuevo estudiante.');
+      } else if (payload.eventType === 'DELETE') {
+        showNotification('⚡ [En Vivo] Se eliminó un estudiante del censo.');
+      } else if (payload.eventType === 'UPDATE') {
+        showNotification('⚡ [En Vivo] Registro actualizado por un docente.');
+      }
+    });
+
+    // B) Consulta automática en vivo cada 6 segundos para garantizar sincronización entre docentes
+    const intervalId = setInterval(() => {
+      fetchRealDataFromSupabase(tableName, true);
+    }, 6000);
+
+    // C) Recargar inmediatamente cuando el docente regresa a la pestaña
+    const handleTabFocus = () => {
+      if (document.visibilityState === 'visible') {
+        fetchRealDataFromSupabase(tableName, true);
+      }
+    };
+    window.addEventListener('focus', handleTabFocus);
+    document.addEventListener('visibilitychange', handleTabFocus);
+
+    return () => {
+      desuscribirRealtime();
+      clearInterval(intervalId);
+      window.removeEventListener('focus', handleTabFocus);
+      document.removeEventListener('visibilitychange', handleTabFocus);
+    };
+  }, [tableName, fetchRealDataFromSupabase]);
 
   // Cambiar tabla de Supabase y recargar
   const handleTableNameChange = (newTableName: string) => {
@@ -597,6 +639,7 @@ export default function App() {
         onExportData={handleExportCSV}
         supabaseCount={supabaseLiveCount || estudiantes.length}
         isSupabaseSyncing={isSupabaseSyncing}
+        onRefreshLive={() => fetchRealDataFromSupabase(tableName, false)}
         activeView={activeView}
         onViewChange={(view) => setActiveView(view)}
       />
@@ -621,17 +664,21 @@ export default function App() {
                   Base de Datos Supabase (Tabla: {tableName}):
                 </span>
                 <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 ${
                     supabaseConnected
                       ? 'bg-emerald-600 text-white'
                       : 'bg-amber-500 text-white'
                   }`}
                 >
-                  {supabaseConnected ? 'Conectado en Vivo' : 'Censo Cargado'}
+                  {supabaseConnected && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-ping inline-block"></span>
+                  )}
+                  {supabaseConnected ? 'En Vivo • Multiusuario' : 'Censo Cargado'}
                 </span>
               </div>
-              <p className="text-slate-600 mt-0.5">
-                Censo institucional: <strong>{estudiantes.length} estudiantes registrados</strong>.
+              <p className="text-slate-600 mt-0.5 flex flex-wrap items-center gap-x-2">
+                <span>Censo institucional: <strong>{estudiantes.length} estudiantes registrados</strong>.</span>
+                <span className="text-emerald-700 font-medium hidden md:inline">• Actualización instantánea entre docentes activa</span>
               </p>
             </div>
           </div>

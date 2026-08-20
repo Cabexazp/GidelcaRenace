@@ -28,6 +28,7 @@ interface HeaderProps {
   onExportData: () => void;
   supabaseCount?: number | null;
   isSupabaseSyncing?: boolean;
+  onRefreshLive?: () => void;
   activeView: 'directorio' | 'reportes';
   onViewChange: (view: 'directorio' | 'reportes') => void;
 }
@@ -44,6 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
   onExportData,
   supabaseCount,
   isSupabaseSyncing,
+  onRefreshLive,
   activeView,
   onViewChange
 }) => {
@@ -149,6 +151,26 @@ export const Header: React.FC<HeaderProps> = ({
               {rolUsuario === 'estudiante' && <User className="w-3.5 h-3.5 text-purple-300" />}
               <span className="font-bold text-white capitalize">{rolUsuario}</span>
             </div>
+
+            {/* Live Sync Status & Refresh Button */}
+            {onRefreshLive && (
+              <button
+                id="btn-live-sync-header"
+                onClick={onRefreshLive}
+                disabled={isSupabaseSyncing}
+                className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-900/60 hover:bg-emerald-900/90 text-white border border-emerald-500/30 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                title="Sincronización en vivo automática activa. Clic para recargar datos de Supabase ahora"
+              >
+                <div className="relative flex items-center justify-center">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span className="absolute w-2 h-2 rounded-full bg-emerald-300 animate-ping"></span>
+                </div>
+                <RefreshCw className={`w-3.5 h-3.5 text-yellow-300 ${isSupabaseSyncing ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline text-[11px] font-black text-emerald-100">
+                  {isSupabaseSyncing ? 'Sincronizando...' : 'En Vivo'}
+                </span>
+              </button>
+            )}
 
             {/* Supabase Button */}
             {rolUsuario === 'administrador' && (

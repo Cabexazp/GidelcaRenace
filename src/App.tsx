@@ -18,6 +18,7 @@ import { StudentPortalView } from './components/StudentPortalView';
 import { AuthRoleModal } from './components/AuthRoleModal';
 import { LoginView } from './components/LoginView';
 import { AnalyticsReportsView } from './components/AnalyticsReportsView';
+import { ExportReportsModal } from './components/ExportReportsModal';
 import {
   cargarTodosLosEstudiantesSupabase,
   guardarEstudianteEnSupabase,
@@ -116,6 +117,8 @@ export default function App() {
   const [isQuickAidModalOpen, setIsQuickAidModalOpen] = useState<boolean>(false);
   const [studentForAid, setStudentForAid] = useState<EstudianteReporte | null>(null);
   const [initialAidType, setInitialAidType] = useState<TipoAyuda>('Alimento');
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
+  const [exportGrade, setExportGrade] = useState<string>('Todos');
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState<boolean>(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
@@ -636,7 +639,10 @@ export default function App() {
           setIsFormModalOpen(true);
         }}
         onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
-        onExportData={handleExportCSV}
+        onExportData={() => {
+          setExportGrade(selectedGrade);
+          setIsExportModalOpen(true);
+        }}
         supabaseCount={supabaseLiveCount || estudiantes.length}
         isSupabaseSyncing={isSupabaseSyncing}
         onRefreshLive={() => fetchRealDataFromSupabase(tableName, false)}
@@ -774,6 +780,7 @@ export default function App() {
           <AnalyticsReportsView
             estudiantes={estudiantes}
             onSelectStudent={(est) => setSelectedStudentForDetail(est)}
+            onNotify={showNotification}
           />
         ) : (
           /* VISTA 2: DIRECTORIO DEL CENSO ESTUDIANTIL */
@@ -808,6 +815,7 @@ export default function App() {
                   <GradeDirectoryView
                     estudiantes={estudiantes}
                     onSelectGrade={(grado) => setSelectedGrade(grado)}
+                    onNotify={showNotification}
                   />
                 ) : (
                   /* Listado de Estudiantes del Grado Seleccionado o Búsqueda Activa */
@@ -981,6 +989,14 @@ export default function App() {
           } catch {}
           showNotification(`Sesión iniciada como: ${newRole.toUpperCase()}`);
         }}
+      />
+
+      <ExportReportsModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        estudiantes={estudiantes}
+        initialGrade={exportGrade}
+        onNotify={showNotification}
       />
     </div>
   );

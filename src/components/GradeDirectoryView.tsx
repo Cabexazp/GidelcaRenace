@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { EstudianteReporte } from '../types';
 import {
   GraduationCap,
@@ -9,22 +9,70 @@ import {
   ArrowRight,
   Sparkles,
   School,
-  HeartHandshake
+  HeartHandshake,
+  Download,
+  FileSpreadsheet,
+  FileText
 } from 'lucide-react';
 import { ordenarGradosEscolares } from '../lib/supabase';
+import { exportarReporteExcel, exportarReportePDF } from '../lib/exportReports';
+import { ExportReportsModal } from './ExportReportsModal';
 
 interface GradeDirectoryViewProps {
   estudiantes: EstudianteReporte[];
   onSelectGrade: (grade: string) => void;
+  onNotify?: (msg: string) => void;
 }
 
 export const GradeDirectoryView: React.FC<GradeDirectoryViewProps> = ({
   estudiantes,
-  onSelectGrade
+  onSelectGrade,
+  onNotify
 }) => {
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [modalGrade, setModalGrade] = useState('Todos');
+
   // Obtener lista única de grados dinámicamente desde los estudiantes
   const uniqueGrades = Array.from(new Set(estudiantes.map((e) => e.grado))).filter(Boolean) as string[];
   const sortedGrades = ordenarGradosEscolares(uniqueGrades);
+
+  // Descarga rápida Excel
+  const handleDownloadExcel = async (e: React.MouseEvent, grade: string) => {
+    e.stopPropagation();
+    try {
+      await exportarReporteExcel(estudiantes, {
+        grado: grade,
+        tituloInstitucion: 'Gimnasio del Calima'
+      });
+      if (onNotify) {
+        onNotify(
+          `📊 Reporte Excel descargado (${grade === 'Todos' ? 'General' : `Grado ${grade}`}).`
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      if (onNotify) onNotify('Error generando archivo Excel.');
+    }
+  };
+
+  // Descarga rápida PDF
+  const handleDownloadPDF = (e: React.MouseEvent, grade: string) => {
+    e.stopPropagation();
+    try {
+      exportarReportePDF(estudiantes, {
+        grado: grade,
+        tituloInstitucion: 'Gimnasio del Calima'
+      });
+      if (onNotify) {
+        onNotify(
+          `📄 Reporte PDF descargado (${grade === 'Todos' ? 'General' : `Grado ${grade}`}).`
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      if (onNotify) onNotify('Error generando archivo PDF.');
+    }
+  };
 
   // Estadísticas por cada grado
   const gradeStats = sortedGrades.map((grado) => {
@@ -58,7 +106,7 @@ export const GradeDirectoryView: React.FC<GradeDirectoryViewProps> = ({
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       {/* Directory Header Banner */}
-      <div className="bg-gradient-to-br from-[#15803D] via-emerald-800 to-emerald-950 text-white rounded-3xl p-6 sm:p-8 shadow-xl relative overflow-hidden">
+      <div className="bg-gradient-to-br from-[#15803D] via-emerald-800 to-emerald-950 text-white rounded-3xl p-6 sm:p-8 shadow-xl relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="absolute right-0 top-0 translate-x-8 -translate-y-8 w-64 h-64 rounded-full bg-yellow-400/10 blur-2xl pointer-events-none" />
 
         <div className="relative z-10 max-w-2xl space-y-2">
@@ -70,8 +118,36 @@ export const GradeDirectoryView: React.FC<GradeDirectoryViewProps> = ({
             Selecciona un Grado para consultar sus Estudiantes
           </h2>
           <p className="text-xs sm:text-sm text-emerald-100/90 leading-relaxed font-medium">
-            Se encontraron <strong className="text-yellow-300 font-black">{estudiantes.length} estudiantes</strong> distribuidos en <strong className="text-yellow-300 font-black">{sortedGrades.length} grupos escolares</strong>. Haz clic en cualquiera de los grados para ver únicamente su listado detallado y gestionar sus ayudas.
+            Se encontraron <strong className="text-yellow-300 font-black">{estudiantes.length} estudiantes</strong> distribuidos en <strong className="text-yellow-300 font-black">{sortedGrades.length} grupos escolares</strong>. Haz clic en cualquiera de los grados para ver su listado o descarga sus reportes en Excel y PDF.
           </p>
+        </div>
+
+        {/* Acciones de Exportación en el Banner */}
+        <div className="relative z-10 flex flex-wrap md:flex-col gap-2 shrink-0">
+          <button
+            onClick={(e) => handleDownloadExcel(e, 'Todos')}
+            className="px-4 py-2.5 rounded-2xl bg-[#107C41] hover:bg-[#0c5e31] text-white text-xs font-black flex items-center gap-2 shadow-lg transition-all cursor-pointer border border-emerald-400/30"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>Excel General</span>
+          </button>
+          <button
+            onClick={(e) => handleDownloadPDF(e, 'Todos')}
+            className="px-4 py-2.5 rounded-2xl bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-black flex items-center gap-2 shadow-lg transition-all cursor-pointer border border-rose-400/30"
+          >
+            <FileText className="w-4 h-4" />
+            <span>PDF General</span>
+          </button>
+          <button
+            onClick={() => {
+              setModalGrade('Todos');
+              setIsExportModalOpen(true);
+            }}
+            className="px-4 py-2 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-emerald-950 text-xs font-black flex items-center gap-2 shadow-lg transition-all cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            <span>Opciones de Descarga</span>
+          </button>
         </div>
       </div>
 
@@ -159,17 +235,53 @@ export const GradeDirectoryView: React.FC<GradeDirectoryViewProps> = ({
                 </div>
               </div>
 
-              {/* Action Button */}
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-black text-[#15803D] group-hover:text-emerald-800">
-                <span>Ver {stat.total} estudiantes</span>
-                <div className="w-7 h-7 rounded-xl bg-emerald-50 group-hover:bg-emerald-600 group-hover:text-white flex items-center justify-center transition-all">
-                  <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+              {/* Botones de Descarga directa para este Grado + Ver listado */}
+              <div className="mt-4 pt-3 border-t border-slate-100 space-y-2">
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    Descargar:
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={(e) => handleDownloadExcel(e, stat.grado)}
+                      title={`Descargar Excel del Grado ${stat.grado}`}
+                      className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-600 text-emerald-800 hover:text-white border border-emerald-200 text-[10px] font-black inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                    >
+                      <FileSpreadsheet className="w-3 h-3" />
+                      <span>Excel</span>
+                    </button>
+                    <button
+                      onClick={(e) => handleDownloadPDF(e, stat.grado)}
+                      title={`Descargar PDF del Grado ${stat.grado}`}
+                      className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-800 hover:text-white border border-rose-200 text-[10px] font-black inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                    >
+                      <FileText className="w-3 h-3" />
+                      <span>PDF</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Action Link to enter grade */}
+                <div className="flex items-center justify-between text-xs font-black text-[#15803D] group-hover:text-emerald-800 pt-1">
+                  <span>Ver {stat.total} estudiantes</span>
+                  <div className="w-7 h-7 rounded-xl bg-emerald-50 group-hover:bg-emerald-600 group-hover:text-white flex items-center justify-center transition-all">
+                    <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                  </div>
                 </div>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Modal de Descargas */}
+      <ExportReportsModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        estudiantes={estudiantes}
+        initialGrade={modalGrade}
+        onNotify={onNotify}
+      />
     </div>
   );
 };

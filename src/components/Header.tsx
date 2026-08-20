@@ -7,6 +7,7 @@ import {
   User,
   Database,
   Printer,
+  Download,
   School,
   RefreshCw,
   Key,
@@ -191,15 +192,15 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             )}
 
-            {/* Export CSV Button */}
+            {/* Export Reports Modal Trigger Button */}
             <button
               id="btn-export-data"
               onClick={onExportData}
-              className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/20 text-white border border-white/15 transition-colors flex items-center gap-1 cursor-pointer"
-              title="Exportar Reporte a CSV"
+              className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl text-xs font-bold bg-white/15 hover:bg-white/25 text-white border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Descargar reportes en Excel (.xlsx) y PDF (.pdf) por grado o general"
             >
-              <Printer className="w-3.5 h-3.5 text-white" />
-              <span className="hidden sm:inline">Exportar</span>
+              <Download className="w-3.5 h-3.5 text-yellow-300" />
+              <span className="hidden sm:inline">Descargar Reportes</span>
             </button>
 
             {/* Add Student Button */}

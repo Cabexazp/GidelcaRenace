@@ -27,7 +27,11 @@ import {
   CheckCircle2,
   Wifi,
   Download,
-  Filter
+  Filter,
+  FileSpreadsheet,
+  FileText,
+  Printer,
+  Sparkles
 } from 'lucide-react';
 import { EstudianteReporte, TipoAyuda } from '../types';
 import { ordenarGradosEscolares } from '../lib/supabase';
@@ -37,10 +41,13 @@ import {
   OPCIONES_AYUDA_PRIORITARIA,
   OPCIONES_CONECTIVIDAD
 } from '../lib/surveyOptions';
+import { exportarReporteExcel, exportarReportePDF } from '../lib/exportReports';
+import { ExportReportsModal } from './ExportReportsModal';
 
 interface AnalyticsReportsViewProps {
   estudiantes: EstudianteReporte[];
   onSelectStudent?: (estudiante: EstudianteReporte) => void;
+  onNotify?: (msg: string) => void;
 }
 
 const COLORS_URGENCIA = {
@@ -60,9 +67,14 @@ const COLORS_AYUDAS = {
 
 export const AnalyticsReportsView: React.FC<AnalyticsReportsViewProps> = ({
   estudiantes,
-  onSelectStudent
+  onSelectStudent,
+  onNotify
 }) => {
   const [selectedGradeFilter, setSelectedGradeFilter] = useState<string>('Todos');
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
+  const [modalInitialGrade, setModalInitialGrade] = useState<string>('Todos');
+  const [isExportingExcel, setIsExportingExcel] = useState<boolean>(false);
+  const [isExportingPDF, setIsExportingPDF] = useState<boolean>(false);
 
   // Filtrar estudiantes si se seleccionó un grado específico
   const filteredStudents = useMemo(() => {
@@ -75,6 +87,57 @@ export const AnalyticsReportsView: React.FC<AnalyticsReportsViewProps> = ({
     const grades = Array.from(new Set(estudiantes.map((e) => e.grado))).filter(Boolean) as string[];
     return ordenarGradosEscolares(grades);
   }, [estudiantes]);
+
+  // Manejo de descarga rápida de Excel
+  const handleQuickDownloadExcel = async (grade = selectedGradeFilter) => {
+    setIsExportingExcel(true);
+    try {
+      await exportarReporteExcel(estudiantes, {
+        grado: grade,
+        tituloInstitucion: 'Gimnasio del Calima'
+      });
+      if (onNotify) {
+        onNotify(
+          `📊 Reporte Excel descargado exitosamente (${
+            grade === 'Todos' ? 'Censo General' : `Grado ${grade}`
+          }).`
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      if (onNotify) onNotify('Error generando el archivo Excel.');
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
+
+  // Manejo de descarga rápida de PDF
+  const handleQuickDownloadPDF = (grade = selectedGradeFilter) => {
+    setIsExportingPDF(true);
+    try {
+      exportarReportePDF(estudiantes, {
+        grado: grade,
+        tituloInstitucion: 'Gimnasio del Calima'
+      });
+      if (onNotify) {
+        onNotify(
+          `📄 Reporte PDF descargado exitosamente (${
+            grade === 'Todos' ? 'Censo General' : `Grado ${grade}`
+          }).`
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      if (onNotify) onNotify('Error generando el archivo PDF.');
+    } finally {
+      setIsExportingPDF(false);
+    }
+  };
+
+  const openExportModalForGrade = (grade: string) => {
+    setModalInitialGrade(grade);
+    setIsExportModalOpen(true);
+  };
 
   // 1. Datos para Reporte por Grados Escolares (Distribución y Urgencia)
   const dataGrados = useMemo(() => {
@@ -251,7 +314,7 @@ export const AnalyticsReportsView: React.FC<AnalyticsReportsViewProps> = ({
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
       {/* Top Banner de Reportes & Filtro de Grado */}
-      <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col xl:flex-row xl:items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <div className="p-2 rounded-xl bg-yellow-400 text-emerald-950 font-black">
@@ -266,22 +329,60 @@ export const AnalyticsReportsView: React.FC<AnalyticsReportsViewProps> = ({
           </p>
         </div>
 
-        {/* Selector de Filtro de Grado */}
-        <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-200 text-xs">
-          <Filter className="w-4 h-4 text-slate-400 ml-2" />
-          <span className="font-bold text-slate-600">Filtrar Grado:</span>
-          <select
-            value={selectedGradeFilter}
-            onChange={(e) => setSelectedGradeFilter(e.target.value)}
-            className="bg-white px-3 py-1.5 rounded-xl border border-slate-300 font-black text-emerald-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        {/* Acciones y Filtros */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Selector de Filtro de Grado */}
+          <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-200 text-xs">
+            <Filter className="w-4 h-4 text-slate-400 ml-2" />
+            <span className="font-bold text-slate-600">Grado:</span>
+            <select
+              value={selectedGradeFilter}
+              onChange={(e) => setSelectedGradeFilter(e.target.value)}
+              className="bg-white px-3 py-1.5 rounded-xl border border-slate-300 font-black text-emerald-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value="Todos">Todos los Grados ({estudiantes.length})</option>
+              {uniqueGrades.map((g) => (
+                <option key={g} value={g}>
+                  Grado {g} ({estudiantes.filter((e) => e.grado === g).length})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Botón Descargar Excel */}
+          <button
+            id="btn-quick-export-excel"
+            onClick={() => handleQuickDownloadExcel(selectedGradeFilter)}
+            disabled={isExportingExcel || filteredStudents.length === 0}
+            className="px-3.5 py-2 rounded-2xl bg-[#107C41] hover:bg-[#0b5c30] text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+            title={`Descargar en Excel (.xlsx) ${selectedGradeFilter === 'Todos' ? 'todos los grados' : `el Grado ${selectedGradeFilter}`}`}
           >
-            <option value="Todos">Todos los Grados ({estudiantes.length} estudiantes)</option>
-            {uniqueGrades.map((g) => (
-              <option key={g} value={g}>
-                Grado {g} ({estudiantes.filter((e) => e.grado === g).length})
-              </option>
-            ))}
-          </select>
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>{isExportingExcel ? 'Generando...' : 'Descargar Excel'}</span>
+          </button>
+
+          {/* Botón Descargar PDF */}
+          <button
+            id="btn-quick-export-pdf"
+            onClick={() => handleQuickDownloadPDF(selectedGradeFilter)}
+            disabled={isExportingPDF || filteredStudents.length === 0}
+            className="px-3.5 py-2 rounded-2xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+            title={`Descargar en PDF (.pdf) ${selectedGradeFilter === 'Todos' ? 'todos los grados' : `el Grado ${selectedGradeFilter}`}`}
+          >
+            <FileText className="w-4 h-4" />
+            <span>{isExportingPDF ? 'Generando...' : 'Descargar PDF'}</span>
+          </button>
+
+          {/* Botón Centro de Descargas Completo */}
+          <button
+            id="btn-open-export-modal"
+            onClick={() => openExportModalForGrade(selectedGradeFilter)}
+            className="px-3 py-2 rounded-2xl bg-slate-900 hover:bg-slate-800 text-yellow-300 font-black text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+            title="Abrir centro de descargas con opciones por grado y general"
+          >
+            <Download className="w-4 h-4 text-yellow-400" />
+            <span>Centro de Descargas</span>
+          </button>
         </div>
       </div>
 
@@ -413,6 +514,7 @@ export const AnalyticsReportsView: React.FC<AnalyticsReportsViewProps> = ({
                 <th className="py-2.5 px-3 text-center text-orange-600">Alerta (Naranja)</th>
                 <th className="py-2.5 px-3 text-center text-emerald-700">Estables (Verde)</th>
                 <th className="py-2.5 px-3 text-center text-amber-800">Ayudas Entregadas</th>
+                <th className="py-2.5 px-3 text-right">Descargar Reporte</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -428,6 +530,26 @@ export const AnalyticsReportsView: React.FC<AnalyticsReportsViewProps> = ({
                   <td className="py-2 px-3 text-center text-emerald-800 bg-emerald-50/40">{row.Estables}</td>
                   <td className="py-2 px-3 text-center font-black text-amber-900 bg-amber-50/40">
                     {row.totalAyudas} kits
+                  </td>
+                  <td className="py-2 px-3 text-right">
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button
+                        onClick={() => handleQuickDownloadExcel(row.gradoSimple)}
+                        title={`Descargar Excel del Grado ${row.gradoSimple}`}
+                        className="px-2 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-black inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                      >
+                        <FileSpreadsheet className="w-3 h-3" />
+                        <span>Excel</span>
+                      </button>
+                      <button
+                        onClick={() => handleQuickDownloadPDF(row.gradoSimple)}
+                        title={`Descargar PDF del Grado ${row.gradoSimple}`}
+                        className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[10px] font-black inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                      >
+                        <FileText className="w-3 h-3" />
+                        <span>PDF</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -650,6 +772,15 @@ export const AnalyticsReportsView: React.FC<AnalyticsReportsViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Modal Central de Descarga de Reportes en Excel y PDF */}
+      <ExportReportsModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        estudiantes={estudiantes}
+        initialGrade={modalInitialGrade}
+        onNotify={onNotify}
+      />
     </div>
   );
 };
